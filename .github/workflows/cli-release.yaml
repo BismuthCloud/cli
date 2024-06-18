@@ -1,0 +1,55 @@
+name: CLI Release
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  linux-build-push:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        run: |
+          rustup toolchain install stable
+          cargo install cross
+
+      - name: Build Release (${{ matrix.target }})
+        run: |
+          cross build --release --target ${{ matrix.target }}
+          mv target/${{ matrix.target }}/release/cli bismuthcli.${{ matrix.target }}
+
+      - name: Upload Release (${{ matrix.target }}) Binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bismuthcli.${{ matrix.target }}
+
+  macos-build-push:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        target: [x86_64-apple-darwin, aarch64-apple-darwin]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        run: |
+          rustup toolchain install stable
+          rustup target add ${{ matrix.target }}
+
+      - name: Build Release (${{ matrix.target }})
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+          mv target/${{ matrix.target }}/release/cli bismuthcli.${{ matrix.target }}
+
+      - name: Upload Release (${{ matrix.target }}) Binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bismuthcli.${{ matrix.target }}
