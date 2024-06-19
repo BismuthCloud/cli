@@ -35,7 +35,7 @@ impl APIClient {
         base_url.set_password(Some(token)).unwrap();
         Ok(Self {
             client: reqwest::ClientBuilder::new()
-                .user_agent("bismuthos-cli")
+                .user_agent("bismuthcloud-cli")
                 .build()?,
             base_url,
         })
@@ -183,7 +183,7 @@ fn token_server() -> Result<String> {
     let server = tiny_http::Server::http("localhost:0").map_err(|e| anyhow!(e))?;
     println!("Go to the following URL to authenticate:");
     println!(
-        "https://app.bismuthos.com/login?cli-redirect=http://localhost:{}/",
+        "https://app.bismuth.cloud/login?cli-redirect=http://localhost:{}/",
         server.server_addr().to_ip().unwrap().port()
     );
     let request = server

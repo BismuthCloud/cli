@@ -3,7 +3,7 @@ use std::{path::PathBuf, str::FromStr};
 use clap::{Args, Parser, Subcommand};
 use url::Url;
 
-/// The CLI for BismuthOS
+/// The CLI for Bismuth Cloud
 #[derive(Debug, Parser)]
 pub struct Cli {
     #[clap(flatten)]
@@ -15,9 +15,9 @@ pub struct Cli {
 
 pub fn default_config_file() -> PathBuf {
     if let Some(config_dir) = dirs::config_dir() {
-        config_dir.join("bismuthos.json")
+        config_dir.join("bismuth.json")
     } else {
-        dirs::home_dir().unwrap().join(".config/bismuthos.json")
+        dirs::home_dir().unwrap().join(".config/bismuth.json")
     }
 }
 
@@ -38,7 +38,7 @@ impl FromStr for IdOrName {
 
 #[derive(Debug, Args)]
 pub struct GlobalOpts {
-    #[arg(long, default_value = "https://api.bismuthos.com")]
+    #[arg(long, default_value = "https://api.bismuth.cloud")]
     pub api_url: Url,
 
     #[arg(long, default_value = default_config_file().into_os_string())]
