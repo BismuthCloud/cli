@@ -69,7 +69,7 @@ impl ResponseErrorExt for reqwest::Response {
             Ok(self)
         } else {
             let body = self.text().await?;
-            Err(anyhow!("Request failed ({}): {}", status, body))
+            Err(anyhow!("{} ({})", body, status))
         }
     }
 }
