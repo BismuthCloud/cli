@@ -5,6 +5,7 @@ use log::debug;
 use reqwest_eventsource::EventSource;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Command;
@@ -179,18 +180,72 @@ async fn feature_logs(
     Ok(())
 }
 
-fn token_server() -> Result<String> {
+fn oidc_url(api_url: &Url) -> Url {
+    let base = match api_url.host_str() {
+        Some("api-staging.bismuth.cloud") => {
+            Url::parse("https://auth-staging.bismuth.cloud/").unwrap()
+        }
+        Some("localhost") => Url::parse("http://localhost:8543/").unwrap(),
+        _ => Url::parse("https://auth.bismuth.cloud/").unwrap(),
+    };
+    base.join("/realms/bismuth/protocol/openid-connect/")
+        .unwrap()
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Tokens {
+    access_token: String,
+    // Don't care about the rest
+}
+
+async fn oidc_server(api_url: &Url) -> Result<String> {
     let server = tiny_http::Server::http("localhost:0").map_err(|e| anyhow!(e))?;
-    println!("Go to the following URL to authenticate:");
+    let port = server.server_addr().to_ip().unwrap().port();
     println!(
-        "https://app.bismuth.cloud/login?cli-redirect=http://localhost:{}/",
-        server.server_addr().to_ip().unwrap().port()
+        "Go to the following URL to authenticate: {}",
+        oidc_url(api_url).join(&format!("auth?client_id=cli&redirect_uri=http://localhost:{}/&scope=openid&response_type=code&response_mode=query&prompt=login", port)).unwrap()
     );
-    let request = server
-        .incoming_requests()
+    let request = tokio::task::spawn_blocking(move || {
+        server
+            .incoming_requests()
+            .next()
+            .ok_or_else(|| anyhow!("No request"))
+    })
+    .await??;
+    let code = request
+        .url()
+        .split("code=")
+        .last()
+        .expect("No code")
+        .split("&")
         .next()
-        .ok_or_else(|| anyhow!("No request"))?;
-    let token = request.url().split("?token=").last().unwrap().to_string();
+        .unwrap()
+        .to_string();
+    debug!("Got code: {}", code);
+    let client = reqwest::Client::new();
+    let tokens: Tokens = client
+        .post(oidc_url(api_url).join("token").unwrap())
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(format!(
+            "grant_type=authorization_code&client_id=cli&code={}&redirect_uri=http://localhost:{}/",
+            code, port
+        ))
+        .send()
+        .await?
+        .error_body_for_status()
+        .await?
+        .json()
+        .await?;
+    let api_key = client
+        .post(api_url.join("/auth/apikey").unwrap())
+        .header("Authorization", format!("Bearer {}", tokens.access_token))
+        .send()
+        .await?
+        .error_body_for_status()
+        .await?
+        .text()
+        .await?;
+
     request.respond(
         tiny_http::Response::from_string(
             "<html><body>Authentication successful. You may now close this window</body></html>",
@@ -201,7 +256,7 @@ fn token_server() -> Result<String> {
                 .unwrap(),
         ),
     )?;
-    Ok(token)
+    Ok(api_key)
 }
 
 #[tokio::main]
@@ -214,7 +269,7 @@ async fn main() -> Result<()> {
     if let cli::Command::Login = args.command {
         debug!("Starting login flow");
 
-        let token = tokio::task::spawn_blocking(token_server).await??;
+        let token = oidc_server(&args.global.api_url).await?;
 
         let client = APIClient::new(&args.global.api_url, &token)?;
         let organizations: Vec<api::Organization> =
@@ -224,8 +279,9 @@ async fn main() -> Result<()> {
         for (i, org) in organizations.iter().enumerate() {
             println!("{}: {}", i + 1, org.name);
         }
-
         print!("> ");
+        std::io::stdout().flush()?;
+
         let mut org_selector = String::new();
         std::io::stdin().read_line(&mut org_selector)?;
         let organization = if let Ok(org_idx) = org_selector.trim().parse::<usize>() {
