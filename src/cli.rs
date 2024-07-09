@@ -88,6 +88,10 @@ pub enum ProjectCommand {
         project: IdOrName,
         outdir: Option<PathBuf>,
     },
+    Delete {
+        #[clap(short, long)]
+        project: IdOrName,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -105,6 +109,12 @@ pub enum FeatureCommand {
         command: FeatureConfigCommand,
     },
     Deploy {
+        #[clap(short, long)]
+        project: IdOrName,
+        #[clap(short, long)]
+        feature: IdOrName,
+    },
+    Teardown {
         #[clap(short, long)]
         project: IdOrName,
         #[clap(short, long)]

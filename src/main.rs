@@ -353,6 +353,26 @@ async fn main() -> Result<()> {
                 project_clone(&project, &args.global.api_url, outdir.as_deref())?;
                 Ok(())
             }
+            cli::ProjectCommand::Delete { project } => {
+                let project = resolve_project_id(&client, project).await?;
+                print!(
+                    "Are you sure you want to delete project {}? [y/N] ",
+                    project.name
+                );
+                std::io::stdout().flush()?;
+                let mut confirm = String::new();
+                std::io::stdin().read_line(&mut confirm)?;
+                if confirm.trim().to_lowercase() != "y" {
+                    return Ok(());
+                }
+                client
+                    .delete(&format!("/projects/{}", project.id))
+                    .send()
+                    .await?
+                    .error_body_for_status()
+                    .await?;
+                Ok(())
+            }
         },
         cli::Command::Feature { command } => match command {
             cli::FeatureCommand::List { project } => {
@@ -434,6 +454,21 @@ async fn main() -> Result<()> {
 
                 client
                     .post(&format!(
+                        "/projects/{}/features/{}/deploy",
+                        project.id, feature.id
+                    ))
+                    .send()
+                    .await?
+                    .error_body_for_status()
+                    .await?;
+                Ok(())
+            }
+            cli::FeatureCommand::Teardown { project, feature } => {
+                let project = resolve_project_id(&client, project).await?;
+                let feature = resolve_feature_id(&client, &project, feature).await?;
+
+                client
+                    .delete(&format!(
                         "/projects/{}/features/{}/deploy",
                         project.id, feature.id
                     ))
