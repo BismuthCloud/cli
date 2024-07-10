@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use api::Project;
 use clap::Parser as _;
+use colored::Colorize;
 use futures::{StreamExt as _, TryStreamExt};
 use log::debug;
 use reqwest_eventsource::EventSource;
@@ -10,6 +11,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Command;
+use std::time::Duration;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio_util::io::StreamReader;
@@ -211,8 +213,13 @@ async fn oidc_server(api_url: &Url) -> Result<String> {
     let server = tiny_http::Server::http("localhost:0").map_err(|e| anyhow!(e))?;
     let port = server.server_addr().to_ip().unwrap().port();
     println!(
-        "Go to the following URL to authenticate: \x1b[1;34m{}\x1b[0m",
-        oidc_url(api_url).join(&format!("auth?client_id=cli&redirect_uri=http://localhost:{}/&scope=openid&response_type=code&response_mode=query&prompt=login", port)).unwrap()
+        "Go to the following URL to authenticate: {}",
+        oidc_url(api_url)
+            .join(&format!("auth?client_id=cli&redirect_uri=http://localhost:{}/&scope=openid&response_type=code&response_mode=query&prompt=login", port))
+            .unwrap()
+            .to_string()
+            .blue()
+            .bold()
     );
     let request = tokio::task::spawn_blocking(move || {
         server
@@ -268,12 +275,32 @@ async fn oidc_server(api_url: &Url) -> Result<String> {
     Ok(api_key)
 }
 
+async fn check_version() -> Result<()> {
+    let client = reqwest::Client::new();
+    let resp = client.get("https://bismuthcloud.github.io/cli/LATEST").timeout(Duration::from_secs(1)).send().await?;
+    if let [latest_maj, latest_min, latest_patch] = resp.text().await?.split('.').collect::<Vec<&str>>().as_slice() {
+        if let [this_maj, this_min, this_patch] = env!("CARGO_PKG_VERSION").split('.').collect::<Vec<&str>>().as_slice() {
+            if latest_maj > this_maj || latest_min > this_min || latest_patch > this_patch {
+                println!("{}", "A newer version of the CLI is available".yellow());
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Cli::parse();
     env_logger::Builder::new()
         .filter_level(args.global.verbose.log_level_filter())
         .init();
+
+    let _ = check_version().await;
+
+    if let cli::Command::Version = args.command {
+        println!("Bismuth CLI {} ({})", env!("CARGO_PKG_VERSION"), git_version::git_version!());
+        return Ok(());
+    }
 
     if let cli::Command::Login = args.command {
         debug!("Starting login flow");
@@ -733,6 +760,7 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        cli::Command::Version => unreachable!(),
         cli::Command::Login => unreachable!(),
     }
 }

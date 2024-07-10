@@ -52,6 +52,8 @@ pub struct GlobalOpts {
 pub enum Command {
     /// Login to Bismuth Cloud
     Login,
+    /// Show the CLI version
+    Version,
     /// Manage projects
     Project {
         #[clap(subcommand)]
