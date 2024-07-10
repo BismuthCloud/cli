@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use api::Project;
 use clap::Parser as _;
 use futures::{StreamExt as _, TryStreamExt};
 use log::debug;
@@ -151,7 +152,15 @@ fn project_clone(project: &api::Project, api_url: &Url, outdir: Option<&Path>) -
         .arg(&outdir)
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
-        .output()?;
+        .output()
+        .map_err(|e| anyhow!(e))
+        .and_then(|o| {
+            if o.status.success() {
+                Ok(())
+            } else {
+                Err(anyhow!("Failed to clone ({})", o.status))
+            }
+        })?;
 
     Ok(outdir)
 }
@@ -346,6 +355,76 @@ async fn main() -> Result<()> {
                     .await?
                     .error_body_for_status()
                     .await?;
+                Ok(())
+            }
+            cli::ProjectCommand::Import { name, repo } => {
+                let repo = repo.clone().unwrap_or_else(|| PathBuf::from("."));
+                if !repo.exists() {
+                    return Err(anyhow!("Repo does not exist"));
+                }
+                if !repo.join(".git").is_dir() {
+                    return Err(anyhow!("Directory is not a git repository"));
+                }
+                let project: Project = client
+                    .post("/projects/upsert")
+                    .json(&api::CreateProjectRequest { name: name.clone() })
+                    .send()
+                    .await?
+                    .error_body_for_status()
+                    .await?
+                    .json()
+                    .await?;
+                let mut git_url = args
+                    .global
+                    .api_url
+                    .clone()
+                    .join(&format!("/git/{}", project.hash))?;
+                git_url.set_password(Some(&project.clone_token)).unwrap();
+                Command::new("git")
+                    .arg("-C")
+                    .arg(repo.as_path())
+                    .arg("remote")
+                    .arg("add")
+                    .arg("bismuth")
+                    .arg(git_url.to_string())
+                    .output()
+                    .map_err(|e| anyhow!(e))
+                    .and_then(|o| {
+                        if o.status.success() {
+                            Ok(())
+                        } else {
+                            Err(anyhow!("Failed to add bismuth remote"))
+                        }
+                    })?;
+                Command::new("git")
+                    .arg("-C")
+                    .arg(repo.as_path())
+                    .arg("push")
+                    .arg("--force")
+                    .arg("--set-upstream")
+                    .arg("bismuth")
+                    .arg("--all")
+                    .stdout(std::process::Stdio::inherit())
+                    .stderr(std::process::Stdio::inherit())
+                    .output()
+                    .map_err(|e| anyhow!(e))
+                    .and_then(|o| {
+                        if o.status.success() {
+                            Ok(())
+                        } else {
+                            Err(anyhow!("Failed to push to Bismuth"))
+                        }
+                    })?;
+                println!(
+                    "Successfully imported {} to project {}!",
+                    repo.canonicalize()?.as_path().display(),
+                    project.name
+                );
+                println!("You can now push to Bismuth with `git push bismuth` in this repository.");
+                println!(
+                    "You can also deploy this project with `bismuth feature deploy --project {} --feature main` after creating an entrypoint.",
+                    project.id
+                );
                 Ok(())
             }
             cli::ProjectCommand::Clone { project, outdir } => {

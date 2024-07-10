@@ -50,15 +50,19 @@ pub struct GlobalOpts {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Login to Bismuth Cloud
     Login,
+    /// Manage projects
     Project {
         #[clap(subcommand)]
         command: ProjectCommand,
     },
+    /// Manage features
     Feature {
         #[clap(subcommand)]
         command: FeatureCommand,
     },
+    /// Interact with key-value storage
     KV {
         #[clap(short, long)]
         project: IdOrName,
@@ -67,6 +71,7 @@ pub enum Command {
         #[clap(subcommand)]
         command: KVCommand,
     },
+    /// Interact with blob (file) storage
     Blob {
         #[clap(short, long)]
         project: IdOrName,
@@ -79,15 +84,30 @@ pub enum Command {
 
 #[derive(Debug, Subcommand)]
 pub enum ProjectCommand {
+    /// List all projects
     List,
+    /// Create a new project
     Create {
+        #[clap(short, long)]
         name: String,
     },
+    /// Create a new Bismuth project, and import an existing Git repository into it
+    Import {
+        /// The name of the new project
+        #[clap(short, long)]
+        name: String,
+        /// The path to the Git repository to import. Defaults to the current directory.
+        #[clap(short, long)]
+        repo: Option<PathBuf>,
+    },
+    /// Clone the project for local development
     Clone {
         #[clap(short, long)]
         project: IdOrName,
+        /// The target directory to clone the project into. Defaults to the project name.
         outdir: Option<PathBuf>,
     },
+    /// Delete a project
     Delete {
         #[clap(short, long)]
         project: IdOrName,
@@ -96,10 +116,12 @@ pub enum ProjectCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum FeatureCommand {
+    /// List all features in a project
     List {
         #[clap(short, long)]
         project: IdOrName,
     },
+    /// Manage feature configuration
     Config {
         #[clap(short, long)]
         project: IdOrName,
@@ -108,29 +130,34 @@ pub enum FeatureCommand {
         #[clap(subcommand)]
         command: FeatureConfigCommand,
     },
+    /// Deploy a feature to the cloud
     Deploy {
         #[clap(short, long)]
         project: IdOrName,
         #[clap(short, long)]
         feature: IdOrName,
     },
+    /// Teardown a feature
     Teardown {
         #[clap(short, long)]
         project: IdOrName,
         #[clap(short, long)]
         feature: IdOrName,
     },
+    /// Get the URL for a deployed feature
     GetInvokeURL {
         #[clap(short, long)]
         project: IdOrName,
         #[clap(short, long)]
         feature: IdOrName,
     },
+    /// Get logs from a deployment
     Logs {
         #[clap(short, long)]
         project: IdOrName,
         #[clap(short, long)]
         feature: IdOrName,
+        /// Continuously tail the log stream. Equivalent to `tail -f`.
         #[clap(short, long, default_value_t = false)]
         follow: bool,
     },
@@ -152,9 +179,11 @@ pub enum KVCommand {
 #[derive(Debug, Args)]
 #[group(required = true, multiple = false)]
 pub struct BlobValue {
+    /// A literal value to store
     #[clap(short, long)]
     pub literal: Option<String>,
 
+    /// The path to a file to store
     #[clap(short, long)]
     pub file: Option<PathBuf>,
 }
@@ -169,6 +198,7 @@ pub enum BlobCommand {
     },
     Get {
         key: String,
+        /// The path to write the blob to. Defaults to writing to stdout.
         output: Option<PathBuf>,
     },
     Set {
