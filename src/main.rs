@@ -281,7 +281,8 @@ async fn check_version() -> Result<()> {
     if let [latest_maj, latest_min, latest_patch] = resp.text().await?.split('.').collect::<Vec<&str>>().as_slice() {
         if let [this_maj, this_min, this_patch] = env!("CARGO_PKG_VERSION").split('.').collect::<Vec<&str>>().as_slice() {
             if latest_maj > this_maj || latest_min > this_min || latest_patch > this_patch {
-                println!("{}", "A newer version of the CLI is available".yellow());
+                println!("{}", "A newer version of the CLI is available!".yellow());
+                println!("{}", "Get it at https://github.com/BismuthCloud/cli/releases".yellow());
             }
         }
     }
