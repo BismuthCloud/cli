@@ -202,7 +202,7 @@ async fn oidc_server(api_url: &Url) -> Result<String> {
     let server = tiny_http::Server::http("localhost:0").map_err(|e| anyhow!(e))?;
     let port = server.server_addr().to_ip().unwrap().port();
     println!(
-        "Go to the following URL to authenticate: {}",
+        "Go to the following URL to authenticate: \x1b[1;34m{}\x1b[0m",
         oidc_url(api_url).join(&format!("auth?client_id=cli&redirect_uri=http://localhost:{}/&scope=openid&response_type=code&response_mode=query&prompt=login", port)).unwrap()
     );
     let request = tokio::task::spawn_blocking(move || {
