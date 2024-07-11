@@ -277,12 +277,29 @@ async fn oidc_server(api_url: &Url) -> Result<String> {
 
 async fn check_version() -> Result<()> {
     let client = reqwest::Client::new();
-    let resp = client.get("https://bismuthcloud.github.io/cli/LATEST").timeout(Duration::from_secs(1)).send().await?;
-    if let [latest_maj, latest_min, latest_patch] = resp.text().await?.split('.').collect::<Vec<&str>>().as_slice() {
-        if let [this_maj, this_min, this_patch] = env!("CARGO_PKG_VERSION").split('.').collect::<Vec<&str>>().as_slice() {
+    let resp = client
+        .get("https://bismuthcloud.github.io/cli/LATEST")
+        .timeout(Duration::from_secs(1))
+        .send()
+        .await?;
+    if let [latest_maj, latest_min, latest_patch] = resp
+        .text()
+        .await?
+        .split('.')
+        .collect::<Vec<&str>>()
+        .as_slice()
+    {
+        if let [this_maj, this_min, this_patch] = env!("CARGO_PKG_VERSION")
+            .split('.')
+            .collect::<Vec<&str>>()
+            .as_slice()
+        {
             if latest_maj > this_maj || latest_min > this_min || latest_patch > this_patch {
                 println!("{}", "A newer version of the CLI is available!".yellow());
-                println!("{}", "Get it at https://github.com/BismuthCloud/cli/releases".yellow());
+                println!(
+                    "{}",
+                    "Get it at https://github.com/BismuthCloud/cli/releases".yellow()
+                );
             }
         }
     }
@@ -296,10 +313,16 @@ async fn main() -> Result<()> {
         .filter_level(args.global.verbose.log_level_filter())
         .init();
 
-    let _ = check_version().await;
+    if std::env::var("BISMUTH_NO_VERSION_CHECK").is_err() {
+        let _ = check_version().await;
+    }
 
     if let cli::Command::Version = args.command {
-        println!("Bismuth CLI {} ({})", env!("CARGO_PKG_VERSION"), git_version::git_version!());
+        println!(
+            "Bismuth CLI {} ({})",
+            env!("CARGO_PKG_VERSION"),
+            git_version::git_version!()
+        );
         return Ok(());
     }
 
