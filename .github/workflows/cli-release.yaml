@@ -76,6 +76,7 @@ jobs:
         run: |
           mkdir static
           echo "${GITHUB_REF##*/v}" > static/LATEST
+          echo "<html><body><a href=\"https://github.com/BismuthCloud/cli/releases\">Download the CLI here</a><!-- ${GITHUB_REF##*/v} --></body></html>" > static/index.html
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
