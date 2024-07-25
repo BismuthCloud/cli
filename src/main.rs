@@ -285,13 +285,16 @@ async fn check_version() -> Result<()> {
     if let [latest_maj, latest_min, latest_patch] = resp
         .text()
         .await?
+        .trim()
         .split('.')
-        .collect::<Vec<&str>>()
+        .map(|s| -> Result<u64> { Ok(s.split('-').next().unwrap().parse::<u64>()?) })
+        .collect::<Result<Vec<u64>, _>>()?
         .as_slice()
     {
         if let [this_maj, this_min, this_patch] = env!("CARGO_PKG_VERSION")
             .split('.')
-            .collect::<Vec<&str>>()
+            .map(|s| -> Result<u64> { Ok(s.split('-').next().unwrap().parse::<u64>()?) })
+            .collect::<Result<Vec<u64>, _>>()?
             .as_slice()
         {
             if latest_maj > this_maj || latest_min > this_min || latest_patch > this_patch {
