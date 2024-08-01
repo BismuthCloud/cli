@@ -37,6 +37,18 @@ impl FromStr for IdOrName {
 }
 
 #[derive(Debug, Args)]
+#[group(required = true, multiple = false)]
+pub struct LiteralOrFile {
+    /// A literal value to use
+    #[clap(long)]
+    pub literal: Option<String>,
+
+    /// The path to a file to use
+    #[clap(long)]
+    pub file: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
 pub struct GlobalOpts {
     #[arg(long, default_value = "https://api.bismuth.cloud")]
     pub api_url: Url,
@@ -81,6 +93,15 @@ pub enum Command {
         feature: IdOrName,
         #[clap(subcommand)]
         command: BlobCommand,
+    },
+    /// Run SQL queries against a feature's database
+    SQL {
+        #[clap(short, long)]
+        project: IdOrName,
+        #[clap(short, long)]
+        feature: IdOrName,
+        #[clap(subcommand)]
+        command: SQLCommand,
     },
 }
 
@@ -178,25 +199,13 @@ pub enum KVCommand {
     Delete { key: String },
 }
 
-#[derive(Debug, Args)]
-#[group(required = true, multiple = false)]
-pub struct BlobValue {
-    /// A literal value to store
-    #[clap(short, long)]
-    pub literal: Option<String>,
-
-    /// The path to a file to store
-    #[clap(short, long)]
-    pub file: Option<PathBuf>,
-}
-
 #[derive(Debug, Subcommand)]
 pub enum BlobCommand {
     List,
     Create {
         key: String,
         #[clap(flatten)]
-        value: BlobValue,
+        value: LiteralOrFile,
     },
     Get {
         key: String,
@@ -206,9 +215,17 @@ pub enum BlobCommand {
     Set {
         key: String,
         #[clap(flatten)]
-        value: BlobValue,
+        value: LiteralOrFile,
     },
     Delete {
         key: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SQLCommand {
+    Query {
+        #[clap(flatten)]
+        query: LiteralOrFile,
     },
 }

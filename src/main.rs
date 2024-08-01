@@ -787,6 +787,41 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        cli::Command::SQL {
+            project,
+            feature,
+            command,
+        } => {
+            let project = resolve_project_id(&client, project).await?;
+            let feature = resolve_feature_id(&client, &project, feature).await?;
+            match command {
+                cli::SQLCommand::Query { query } => {
+                    let resp = client
+                        .post(&format!(
+                            "/projects/{}/features/{}/svcprovider/sql",
+                            project.id, feature.id
+                        ))
+                        .body(if let Some(literal) = &query.literal {
+                            reqwest::Body::from(literal.clone())
+                        } else {
+                            reqwest::Body::from(File::open(query.file.as_ref().unwrap()).await?)
+                        })
+                        .send()
+                        .await?
+                        .error_body_for_status()
+                        .await?;
+                    tokio::io::copy(
+                        &mut StreamReader::new(
+                            resp.bytes_stream()
+                                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)),
+                        ),
+                        &mut tokio::io::stdout(),
+                    )
+                    .await?;
+                    Ok(())
+                }
+            }
+        }
         cli::Command::Version => unreachable!(),
         cli::Command::Login => unreachable!(),
     }
