@@ -38,3 +38,14 @@ pub struct FeatureConfig {
     pub key: String,
     pub value: String,
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeployStatusResponse {
+    pub status: String,
+    pub commit: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InvokeURLResponse {
+    pub url: String,
+}

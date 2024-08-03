@@ -36,6 +36,34 @@ impl FromStr for IdOrName {
     }
 }
 
+#[derive(Clone, Debug, Args)]
+pub struct FeatureRef {
+    #[clap(help = "The feature to operate on, specified as 'project/feature'")]
+    pub feature: String,
+}
+
+impl FromStr for FeatureRef {
+    type Err = &'static str;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(FeatureRef {
+            feature: s.to_string(),
+        })
+    }
+}
+
+impl FeatureRef {
+    pub fn as_str(&self) -> &str {
+        &self.feature
+    }
+    pub fn split(&self) -> (IdOrName, IdOrName) {
+        let mut parts = self.feature.splitn(2, '/');
+        (
+            IdOrName::Name(parts.next().unwrap().to_string()),
+            IdOrName::Name(parts.next().unwrap().to_string()),
+        )
+    }
+}
+
 #[derive(Debug, Args)]
 #[group(required = true, multiple = false)]
 pub struct LiteralOrFile {
@@ -50,7 +78,7 @@ pub struct LiteralOrFile {
 
 #[derive(Debug, Args)]
 pub struct GlobalOpts {
-    #[arg(long, default_value = "https://api.bismuth.cloud")]
+    #[arg(long, default_value = std::env::var("BISMUTH_API").unwrap_or("https://api.bismuth.cloud".to_string()))]
     pub api_url: Url,
 
     #[arg(long, default_value = default_config_file().into_os_string())]
@@ -78,28 +106,16 @@ pub enum Command {
     },
     /// Interact with key-value storage
     KV {
-        #[clap(short, long)]
-        project: IdOrName,
-        #[clap(short, long)]
-        feature: IdOrName,
         #[clap(subcommand)]
         command: KVCommand,
     },
     /// Interact with blob (file) storage
     Blob {
-        #[clap(short, long)]
-        project: IdOrName,
-        #[clap(short, long)]
-        feature: IdOrName,
         #[clap(subcommand)]
         command: BlobCommand,
     },
     /// Run SQL queries against a feature's database
     SQL {
-        #[clap(short, long)]
-        project: IdOrName,
-        #[clap(short, long)]
-        feature: IdOrName,
         #[clap(subcommand)]
         command: SQLCommand,
     },
@@ -110,76 +126,59 @@ pub enum ProjectCommand {
     /// List all projects
     List,
     /// Create a new project
-    Create {
-        #[clap(short, long)]
-        name: String,
-    },
+    Create { name: String },
     /// Create a new Bismuth project, and import an existing Git repository into it
     Import {
         /// The name of the new project
-        #[clap(short, long)]
         name: String,
         /// The path to the Git repository to import. Defaults to the current directory.
-        #[clap(short, long)]
         repo: Option<PathBuf>,
     },
     /// Clone the project for local development
     Clone {
-        #[clap(short, long)]
         project: IdOrName,
         /// The target directory to clone the project into. Defaults to the project name.
         outdir: Option<PathBuf>,
     },
     /// Delete a project
-    Delete {
-        #[clap(short, long)]
-        project: IdOrName,
-    },
+    Delete { project: IdOrName },
 }
 
 #[derive(Debug, Subcommand)]
 pub enum FeatureCommand {
     /// List all features in a project
-    List {
-        #[clap(short, long)]
-        project: IdOrName,
-    },
+    List { project: IdOrName },
     /// Manage feature configuration
     Config {
-        #[clap(short, long)]
-        project: IdOrName,
-        #[clap(short, long)]
-        feature: IdOrName,
+        #[clap(flatten)]
+        feature: FeatureRef,
         #[clap(subcommand)]
         command: FeatureConfigCommand,
     },
     /// Deploy a feature to the cloud
     Deploy {
-        #[clap(short, long)]
-        project: IdOrName,
-        #[clap(short, long)]
-        feature: IdOrName,
+        #[clap(flatten)]
+        feature: FeatureRef,
+    },
+    /// Get the status of a deployment
+    DeployStatus {
+        #[clap(flatten)]
+        feature: FeatureRef,
     },
     /// Teardown a feature
     Teardown {
-        #[clap(short, long)]
-        project: IdOrName,
-        #[clap(short, long)]
-        feature: IdOrName,
+        #[clap(flatten)]
+        feature: FeatureRef,
     },
     /// Get the URL for a deployed feature
-    GetInvokeURL {
-        #[clap(short, long)]
-        project: IdOrName,
-        #[clap(short, long)]
-        feature: IdOrName,
+    GetURL {
+        #[clap(flatten)]
+        feature: FeatureRef,
     },
     /// Get logs from a deployment
     Logs {
-        #[clap(short, long)]
-        project: IdOrName,
-        #[clap(short, long)]
-        feature: IdOrName,
+        #[clap(flatten)]
+        feature: FeatureRef,
         /// Continuously tail the log stream. Equivalent to `tail -f`.
         #[clap(short, long, default_value_t = false)]
         follow: bool,
@@ -194,30 +193,54 @@ pub enum FeatureConfigCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum KVCommand {
-    Get { key: String },
-    Set { key: String, value: String },
-    Delete { key: String },
+    Get {
+        #[clap(flatten)]
+        feature: FeatureRef,
+        key: String,
+    },
+    Set {
+        #[clap(flatten)]
+        feature: FeatureRef,
+        key: String,
+        value: String,
+    },
+    Delete {
+        #[clap(flatten)]
+        feature: FeatureRef,
+        key: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
 pub enum BlobCommand {
-    List,
+    List {
+        #[clap(flatten)]
+        feature: FeatureRef,
+    },
     Create {
+        #[clap(flatten)]
+        feature: FeatureRef,
         key: String,
         #[clap(flatten)]
         value: LiteralOrFile,
     },
     Get {
+        #[clap(flatten)]
+        feature: FeatureRef,
         key: String,
         /// The path to write the blob to. Defaults to writing to stdout.
         output: Option<PathBuf>,
     },
     Set {
+        #[clap(flatten)]
+        feature: FeatureRef,
         key: String,
         #[clap(flatten)]
         value: LiteralOrFile,
     },
     Delete {
+        #[clap(flatten)]
+        feature: FeatureRef,
         key: String,
     },
 }
@@ -225,6 +248,8 @@ pub enum BlobCommand {
 #[derive(Debug, Subcommand)]
 pub enum SQLCommand {
     Query {
+        #[clap(flatten)]
+        feature: FeatureRef,
         #[clap(flatten)]
         query: LiteralOrFile,
     },

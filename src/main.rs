@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use api::Project;
 use clap::Parser as _;
 use colored::Colorize;
 use futures::{StreamExt as _, TryStreamExt};
@@ -139,10 +138,6 @@ fn project_clone(project: &api::Project, api_url: &Url, outdir: Option<&Path>) -
         .map(|p| p.to_owned())
         .unwrap_or(PathBuf::from(&project.name));
     debug!("Cloning project to {:?}", outdir);
-
-    dbg!(auth_url
-        .join(&format!("/git/{}", project.hash))?
-        .to_string());
 
     Command::new("git")
         .arg("clone")
@@ -338,25 +333,35 @@ async fn main() -> Result<()> {
         let organizations: Vec<api::Organization> =
             client.get("/organizations").send().await?.json().await?;
 
-        println!("Select an organization:");
-        for (i, org) in organizations.iter().enumerate() {
-            println!("{}: {}", i + 1, org.name);
-        }
-        print!("> ");
-        std::io::stdout().flush()?;
-
-        let mut org_selector = String::new();
-        std::io::stdin().read_line(&mut org_selector)?;
-        let organization = if let Ok(org_idx) = org_selector.trim().parse::<usize>() {
-            if org_idx > organizations.len() {
-                return Err(anyhow!("Invalid organization index"));
+        let organization = loop {
+            println!("Select an organization:");
+            for (i, org) in organizations.iter().enumerate() {
+                println!("{}: {}", i + 1, org.name);
             }
-            &organizations[org_idx - 1]
-        } else {
-            organizations
-                .iter()
-                .find(|org| org.name == org_selector.trim())
-                .ok_or_else(|| anyhow!("No such organization"))?
+            print!("> ");
+            std::io::stdout().flush()?;
+
+            let mut org_selector = String::new();
+            std::io::stdin().read_line(&mut org_selector)?;
+
+            if let Ok(org_idx) = org_selector.trim().parse::<usize>() {
+                if org_idx > organizations.len() {
+                    eprintln!("Invalid organization index");
+                    continue;
+                }
+                break &organizations[org_idx - 1];
+            } else {
+                match organizations
+                    .iter()
+                    .find(|org| org.name == org_selector.trim())
+                {
+                    Some(org) => break org,
+                    None => {
+                        eprintln!("No such organization");
+                        continue;
+                    }
+                }
+            };
         };
 
         let config = Config {
@@ -419,7 +424,7 @@ async fn main() -> Result<()> {
                 if !repo.join(".git").is_dir() {
                     return Err(anyhow!("Directory is not a git repository"));
                 }
-                let project: Project = client
+                let project: api::Project = client
                     .post("/projects/upsert")
                     .json(&api::CreateProjectRequest { name: name.clone() })
                     .send()
@@ -515,13 +520,10 @@ async fn main() -> Result<()> {
                 }
                 Ok(())
             }
-            cli::FeatureCommand::Config {
-                project,
-                feature,
-                command,
-            } => {
-                let project = resolve_project_id(&client, project).await?;
-                let feature = resolve_feature_id(&client, &project, feature).await?;
+            cli::FeatureCommand::Config { feature, command } => {
+                let (project_name, feature_name) = feature.split();
+                let project = resolve_project_id(&client, &project_name).await?;
+                let feature = resolve_feature_id(&client, &project, &feature_name).await?;
 
                 match command {
                     cli::FeatureConfigCommand::Get { key } => {
@@ -581,9 +583,10 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-            cli::FeatureCommand::Deploy { project, feature } => {
-                let project = resolve_project_id(&client, project).await?;
-                let feature = resolve_feature_id(&client, &project, feature).await?;
+            cli::FeatureCommand::Deploy { feature } => {
+                let (project_name, feature_name) = feature.split();
+                let project = resolve_project_id(&client, &project_name).await?;
+                let feature = resolve_feature_id(&client, &project, &feature_name).await?;
 
                 client
                     .post(&format!(
@@ -596,9 +599,32 @@ async fn main() -> Result<()> {
                     .await?;
                 Ok(())
             }
-            cli::FeatureCommand::Teardown { project, feature } => {
-                let project = resolve_project_id(&client, project).await?;
-                let feature = resolve_feature_id(&client, &project, feature).await?;
+            cli::FeatureCommand::DeployStatus { feature } => {
+                let (project_name, feature_name) = feature.split();
+                let project = resolve_project_id(&client, &project_name).await?;
+                let feature = resolve_feature_id(&client, &project, &feature_name).await?;
+
+                let resp = client
+                    .get(&format!(
+                        "/projects/{}/features/{}/deploy/status",
+                        project.id, feature.id
+                    ))
+                    .send()
+                    .await?;
+                if resp.status().as_u16() == 404 {
+                    println!("Status: Not Deployed");
+                    return Ok(());
+                }
+                let status: api::DeployStatusResponse =
+                    resp.error_body_for_status().await?.json().await?;
+                println!("Status: {}", status.status);
+                println!("Deployed Commit: {}", status.commit);
+                Ok(())
+            }
+            cli::FeatureCommand::Teardown { feature } => {
+                let (project_name, feature_name) = feature.split();
+                let project = resolve_project_id(&client, &project_name).await?;
+                let feature = resolve_feature_id(&client, &project, &feature_name).await?;
 
                 client
                     .delete(&format!(
@@ -611,11 +637,12 @@ async fn main() -> Result<()> {
                     .await?;
                 Ok(())
             }
-            cli::FeatureCommand::GetInvokeURL { project, feature } => {
-                let project = resolve_project_id(&client, project).await?;
-                let feature = resolve_feature_id(&client, &project, feature).await?;
+            cli::FeatureCommand::GetURL { feature } => {
+                let (project_name, feature_name) = feature.split();
+                let project = resolve_project_id(&client, &project_name).await?;
+                let feature = resolve_feature_id(&client, &project, &feature_name).await?;
 
-                let resp = client
+                let resp: api::InvokeURLResponse = client
                     .get(&format!(
                         "/projects/{}/features/{}/invoke_url",
                         project.id, feature.id
@@ -623,205 +650,232 @@ async fn main() -> Result<()> {
                     .send()
                     .await?
                     .error_body_for_status()
+                    .await?
+                    .json()
                     .await?;
-                println!("{}", resp.text().await?);
+                println!("{}", resp.url);
                 Ok(())
             }
-            cli::FeatureCommand::Logs {
-                project,
-                feature,
-                follow,
-            } => {
-                let project = resolve_project_id(&client, project).await?;
-                let feature = resolve_feature_id(&client, &project, feature).await?;
+            cli::FeatureCommand::Logs { feature, follow } => {
+                let (project_name, feature_name) = feature.split();
+                let project = resolve_project_id(&client, &project_name).await?;
+                let feature = resolve_feature_id(&client, &project, &feature_name).await?;
 
                 feature_logs(&project, &feature, *follow, &client).await
             }
         },
-        cli::Command::KV {
-            project,
-            feature,
-            command,
-        } => {
-            let project = resolve_project_id(&client, project).await?;
-            let feature = resolve_feature_id(&client, &project, feature).await?;
-            match command {
-                cli::KVCommand::Get { key } => {
-                    let resp = client
-                        .get(&format!(
-                            "/projects/{}/features/{}/svcprovider/kv/v1/{}",
-                            project.id, feature.id, key
-                        ))
-                        .send()
-                        .await?
-                        .error_body_for_status()
-                        .await?;
-                    tokio::io::copy(
-                        &mut StreamReader::new(
-                            resp.bytes_stream()
-                                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)),
-                        ),
-                        &mut tokio::io::stdout(),
-                    )
+        cli::Command::KV { command } => match command {
+            cli::KVCommand::Get { feature, key } => {
+                let (project_name, feature_name) = feature.split();
+                let project = resolve_project_id(&client, &project_name).await?;
+                let feature = resolve_feature_id(&client, &project, &feature_name).await?;
+
+                let resp = client
+                    .get(&format!(
+                        "/projects/{}/features/{}/svcprovider/kv/v1/{}",
+                        project.id, feature.id, key
+                    ))
+                    .send()
+                    .await?
+                    .error_body_for_status()
                     .await?;
-                    Ok(())
-                }
-                cli::KVCommand::Set { key, value } => {
-                    client
-                        .post(&format!(
-                            "/projects/{}/features/{}/svcprovider/kv/v1/{}",
-                            project.id, feature.id, key
-                        ))
-                        .body(value.clone())
-                        .send()
-                        .await?
-                        .error_body_for_status()
-                        .await?;
-                    Ok(())
-                }
-                cli::KVCommand::Delete { key } => {
-                    client
-                        .delete(&format!(
-                            "/projects/{}/features/{}/svcprovider/kv/v1/{}",
-                            project.id, feature.id, key
-                        ))
-                        .send()
-                        .await?
-                        .error_body_for_status()
-                        .await?;
-                    Ok(())
-                }
+                tokio::io::copy(
+                    &mut StreamReader::new(
+                        resp.bytes_stream()
+                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)),
+                    ),
+                    &mut tokio::io::stdout(),
+                )
+                .await?;
+                Ok(())
             }
-        }
-        cli::Command::Blob {
-            project,
-            feature,
-            command,
-        } => {
-            let project = resolve_project_id(&client, project).await?;
-            let feature = resolve_feature_id(&client, &project, feature).await?;
-            match command {
-                cli::BlobCommand::List => {
-                    let resp = client
-                        .get(&format!(
-                            "/projects/{}/features/{}/svcprovider/blob/v1/",
-                            project.id, feature.id
-                        ))
-                        .send()
-                        .await?;
-                    let blobs: HashMap<String, Vec<u8>> = resp.json().await?;
-                    for blob in blobs.keys() {
-                        println!("{}", blob);
-                    }
-                    Ok(())
-                }
-                cli::BlobCommand::Create { key, value } => {
-                    client
-                        .post(&format!(
-                            "/projects/{}/features/{}/svcprovider/blob/v1/{}",
-                            project.id, feature.id, key
-                        ))
-                        .body(if let Some(literal) = &value.literal {
-                            reqwest::Body::from(literal.clone())
-                        } else {
-                            reqwest::Body::from(File::open(value.file.as_ref().unwrap()).await?)
-                        })
-                        .send()
-                        .await?
-                        .error_body_for_status()
-                        .await?;
-                    Ok(())
-                }
-                cli::BlobCommand::Get { key, output } => {
-                    let resp = client
-                        .get(&format!(
-                            "/projects/{}/features/{}/svcprovider/blob/v1/{}",
-                            project.id, feature.id, key
-                        ))
-                        .send()
-                        .await?
-                        .error_body_for_status()
-                        .await?;
-                    let mut output: Pin<Box<dyn tokio::io::AsyncWrite>> = match output {
-                        Some(output) => Box::pin(File::create(output).await?),
-                        None => Box::pin(tokio::io::stdout()),
-                    };
-                    tokio::io::copy(
-                        &mut StreamReader::new(
-                            resp.bytes_stream()
-                                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)),
-                        ),
-                        &mut output,
-                    )
+            cli::KVCommand::Set {
+                feature,
+                key,
+                value,
+            } => {
+                let (project_name, feature_name) = feature.split();
+                let project = resolve_project_id(&client, &project_name).await?;
+                let feature = resolve_feature_id(&client, &project, &feature_name).await?;
+
+                client
+                    .post(&format!(
+                        "/projects/{}/features/{}/svcprovider/kv/v1/{}",
+                        project.id, feature.id, key
+                    ))
+                    .body(value.clone())
+                    .send()
+                    .await?
+                    .error_body_for_status()
                     .await?;
-                    Ok(())
-                }
-                cli::BlobCommand::Set { key, value } => {
-                    client
-                        .put(&format!(
-                            "/projects/{}/features/{}/svcprovider/blob/v1/{}",
-                            project.id, feature.id, key
-                        ))
-                        .body(if let Some(literal) = &value.literal {
-                            reqwest::Body::from(literal.clone())
-                        } else {
-                            reqwest::Body::from(File::open(value.file.as_ref().unwrap()).await?)
-                        })
-                        .send()
-                        .await?
-                        .error_body_for_status()
-                        .await?;
-                    Ok(())
-                }
-                cli::BlobCommand::Delete { key } => {
-                    client
-                        .delete(&format!(
-                            "/projects/{}/features/{}/svcprovider/blob/v1/{}",
-                            project.id, feature.id, key
-                        ))
-                        .send()
-                        .await?
-                        .error_body_for_status()
-                        .await?;
-                    Ok(())
-                }
+                Ok(())
             }
-        }
-        cli::Command::SQL {
-            project,
-            feature,
-            command,
-        } => {
-            let project = resolve_project_id(&client, project).await?;
-            let feature = resolve_feature_id(&client, &project, feature).await?;
-            match command {
-                cli::SQLCommand::Query { query } => {
-                    let resp = client
-                        .post(&format!(
-                            "/projects/{}/features/{}/svcprovider/sql",
-                            project.id, feature.id
-                        ))
-                        .body(if let Some(literal) = &query.literal {
-                            reqwest::Body::from(literal.clone())
-                        } else {
-                            reqwest::Body::from(File::open(query.file.as_ref().unwrap()).await?)
-                        })
-                        .send()
-                        .await?
-                        .error_body_for_status()
-                        .await?;
-                    tokio::io::copy(
-                        &mut StreamReader::new(
-                            resp.bytes_stream()
-                                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)),
-                        ),
-                        &mut tokio::io::stdout(),
-                    )
+            cli::KVCommand::Delete { feature, key } => {
+                let (project_name, feature_name) = feature.split();
+                let project = resolve_project_id(&client, &project_name).await?;
+                let feature = resolve_feature_id(&client, &project, &feature_name).await?;
+
+                client
+                    .delete(&format!(
+                        "/projects/{}/features/{}/svcprovider/kv/v1/{}",
+                        project.id, feature.id, key
+                    ))
+                    .send()
+                    .await?
+                    .error_body_for_status()
                     .await?;
-                    Ok(())
-                }
+                Ok(())
             }
-        }
+        },
+        cli::Command::Blob { command } => match command {
+            cli::BlobCommand::List { feature } => {
+                let (project_name, feature_name) = feature.split();
+                let project = resolve_project_id(&client, &project_name).await?;
+                let feature = resolve_feature_id(&client, &project, &feature_name).await?;
+
+                let resp = client
+                    .get(&format!(
+                        "/projects/{}/features/{}/svcprovider/blob/v1/",
+                        project.id, feature.id
+                    ))
+                    .send()
+                    .await?;
+                let blobs: HashMap<String, Vec<u8>> = resp.json().await?;
+                for blob in blobs.keys() {
+                    println!("{}", blob);
+                }
+                Ok(())
+            }
+            cli::BlobCommand::Create {
+                feature,
+                key,
+                value,
+            } => {
+                let (project_name, feature_name) = feature.split();
+                let project = resolve_project_id(&client, &project_name).await?;
+                let feature = resolve_feature_id(&client, &project, &feature_name).await?;
+
+                client
+                    .post(&format!(
+                        "/projects/{}/features/{}/svcprovider/blob/v1/{}",
+                        project.id, feature.id, key
+                    ))
+                    .body(if let Some(literal) = &value.literal {
+                        reqwest::Body::from(literal.clone())
+                    } else {
+                        reqwest::Body::from(File::open(value.file.as_ref().unwrap()).await?)
+                    })
+                    .send()
+                    .await?
+                    .error_body_for_status()
+                    .await?;
+                Ok(())
+            }
+            cli::BlobCommand::Get {
+                feature,
+                key,
+                output,
+            } => {
+                let (project_name, feature_name) = feature.split();
+                let project = resolve_project_id(&client, &project_name).await?;
+                let feature = resolve_feature_id(&client, &project, &feature_name).await?;
+
+                let resp = client
+                    .get(&format!(
+                        "/projects/{}/features/{}/svcprovider/blob/v1/{}",
+                        project.id, feature.id, key
+                    ))
+                    .send()
+                    .await?
+                    .error_body_for_status()
+                    .await?;
+                let mut output: Pin<Box<dyn tokio::io::AsyncWrite>> = match output {
+                    Some(output) => Box::pin(File::create(output).await?),
+                    None => Box::pin(tokio::io::stdout()),
+                };
+                tokio::io::copy(
+                    &mut StreamReader::new(
+                        resp.bytes_stream()
+                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)),
+                    ),
+                    &mut output,
+                )
+                .await?;
+                Ok(())
+            }
+            cli::BlobCommand::Set {
+                feature,
+                key,
+                value,
+            } => {
+                let (project_name, feature_name) = feature.split();
+                let project = resolve_project_id(&client, &project_name).await?;
+                let feature = resolve_feature_id(&client, &project, &feature_name).await?;
+
+                client
+                    .put(&format!(
+                        "/projects/{}/features/{}/svcprovider/blob/v1/{}",
+                        project.id, feature.id, key
+                    ))
+                    .body(if let Some(literal) = &value.literal {
+                        reqwest::Body::from(literal.clone())
+                    } else {
+                        reqwest::Body::from(File::open(value.file.as_ref().unwrap()).await?)
+                    })
+                    .send()
+                    .await?
+                    .error_body_for_status()
+                    .await?;
+                Ok(())
+            }
+            cli::BlobCommand::Delete { feature, key } => {
+                let (project_name, feature_name) = feature.split();
+                let project = resolve_project_id(&client, &project_name).await?;
+                let feature = resolve_feature_id(&client, &project, &feature_name).await?;
+
+                client
+                    .delete(&format!(
+                        "/projects/{}/features/{}/svcprovider/blob/v1/{}",
+                        project.id, feature.id, key
+                    ))
+                    .send()
+                    .await?
+                    .error_body_for_status()
+                    .await?;
+                Ok(())
+            }
+        },
+        cli::Command::SQL { command } => match command {
+            cli::SQLCommand::Query { feature, query } => {
+                let (project_name, feature_name) = feature.split();
+                let project = resolve_project_id(&client, &project_name).await?;
+                let feature = resolve_feature_id(&client, &project, &feature_name).await?;
+
+                let resp = client
+                    .post(&format!(
+                        "/projects/{}/features/{}/svcprovider/sql",
+                        project.id, feature.id
+                    ))
+                    .body(if let Some(literal) = &query.literal {
+                        reqwest::Body::from(literal.clone())
+                    } else {
+                        reqwest::Body::from(File::open(query.file.as_ref().unwrap()).await?)
+                    })
+                    .send()
+                    .await?
+                    .error_body_for_status()
+                    .await?;
+                tokio::io::copy(
+                    &mut StreamReader::new(
+                        resp.bytes_stream()
+                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)),
+                    ),
+                    &mut tokio::io::stdout(),
+                )
+                .await?;
+                Ok(())
+            }
+        },
         cli::Command::Version => unreachable!(),
         cli::Command::Login => unreachable!(),
     }
