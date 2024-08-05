@@ -119,6 +119,34 @@ pub enum Command {
         #[clap(subcommand)]
         command: SQLCommand,
     },
+    /// Deploy a feature to the cloud. Alias of `feature deploy`.
+    Deploy {
+        #[clap(flatten)]
+        feature: FeatureRef,
+    },
+    /// Get the status of a deployment. Alias of `feature deploy-status`.
+    DeployStatus {
+        #[clap(flatten)]
+        feature: FeatureRef,
+    },
+    /// Teardown a feature. Alias of `feature teardown`.
+    Teardown {
+        #[clap(flatten)]
+        feature: FeatureRef,
+    },
+    /// Get the URL for a deployed feature. Alias of `feature get-url`.
+    GetURL {
+        #[clap(flatten)]
+        feature: FeatureRef,
+    },
+    /// Get logs from a deployment. Alias of `feature logs`.
+    Logs {
+        #[clap(flatten)]
+        feature: FeatureRef,
+        /// Continuously tail the log stream. Equivalent to `tail -f`.
+        #[clap(short, long, default_value_t = false)]
+        follow: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

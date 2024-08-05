@@ -162,6 +162,82 @@ fn project_clone(project: &api::Project, api_url: &Url, outdir: Option<&Path>) -
     Ok(outdir)
 }
 
+async fn feature_deploy(
+    project: &api::Project,
+    feature: &api::Feature,
+    client: &APIClient,
+) -> Result<()> {
+    client
+        .post(&format!(
+            "/projects/{}/features/{}/deploy",
+            project.id, feature.id
+        ))
+        .send()
+        .await?
+        .error_body_for_status()
+        .await?;
+    Ok(())
+}
+
+async fn feature_deploy_status(
+    project: &api::Project,
+    feature: &api::Feature,
+    client: &APIClient,
+) -> Result<()> {
+    let resp = client
+        .get(&format!(
+            "/projects/{}/features/{}/deploy/status",
+            project.id, feature.id
+        ))
+        .send()
+        .await?;
+    if resp.status().as_u16() == 404 {
+        println!("Status: Not Deployed");
+        return Ok(());
+    }
+    let status: api::DeployStatusResponse = resp.error_body_for_status().await?.json().await?;
+    println!("Status: {}", status.status);
+    println!("Deployed Commit: {}", status.commit);
+    Ok(())
+}
+
+async fn feature_teardown(
+    project: &api::Project,
+    feature: &api::Feature,
+    client: &APIClient,
+) -> Result<()> {
+    client
+        .delete(&format!(
+            "/projects/{}/features/{}/deploy",
+            project.id, feature.id
+        ))
+        .send()
+        .await?
+        .error_body_for_status()
+        .await?;
+    Ok(())
+}
+
+async fn feature_get_url(
+    project: &api::Project,
+    feature: &api::Feature,
+    client: &APIClient,
+) -> Result<()> {
+    let resp: api::InvokeURLResponse = client
+        .get(&format!(
+            "/projects/{}/features/{}/invoke_url",
+            project.id, feature.id
+        ))
+        .send()
+        .await?
+        .error_body_for_status()
+        .await?
+        .json()
+        .await?;
+    println!("{}", resp.url);
+    Ok(())
+}
+
 async fn feature_logs(
     project: &api::Project,
     feature: &api::Feature,
@@ -587,80 +663,30 @@ async fn main() -> Result<()> {
                 let (project_name, feature_name) = feature.split();
                 let project = resolve_project_id(&client, &project_name).await?;
                 let feature = resolve_feature_id(&client, &project, &feature_name).await?;
-
-                client
-                    .post(&format!(
-                        "/projects/{}/features/{}/deploy",
-                        project.id, feature.id
-                    ))
-                    .send()
-                    .await?
-                    .error_body_for_status()
-                    .await?;
-                Ok(())
+                feature_deploy(&project, &feature, &client).await
             }
             cli::FeatureCommand::DeployStatus { feature } => {
                 let (project_name, feature_name) = feature.split();
                 let project = resolve_project_id(&client, &project_name).await?;
                 let feature = resolve_feature_id(&client, &project, &feature_name).await?;
-
-                let resp = client
-                    .get(&format!(
-                        "/projects/{}/features/{}/deploy/status",
-                        project.id, feature.id
-                    ))
-                    .send()
-                    .await?;
-                if resp.status().as_u16() == 404 {
-                    println!("Status: Not Deployed");
-                    return Ok(());
-                }
-                let status: api::DeployStatusResponse =
-                    resp.error_body_for_status().await?.json().await?;
-                println!("Status: {}", status.status);
-                println!("Deployed Commit: {}", status.commit);
-                Ok(())
+                feature_deploy_status(&project, &feature, &client).await
             }
             cli::FeatureCommand::Teardown { feature } => {
                 let (project_name, feature_name) = feature.split();
                 let project = resolve_project_id(&client, &project_name).await?;
                 let feature = resolve_feature_id(&client, &project, &feature_name).await?;
-
-                client
-                    .delete(&format!(
-                        "/projects/{}/features/{}/deploy",
-                        project.id, feature.id
-                    ))
-                    .send()
-                    .await?
-                    .error_body_for_status()
-                    .await?;
-                Ok(())
+                feature_teardown(&project, &feature, &client).await
             }
             cli::FeatureCommand::GetURL { feature } => {
                 let (project_name, feature_name) = feature.split();
                 let project = resolve_project_id(&client, &project_name).await?;
                 let feature = resolve_feature_id(&client, &project, &feature_name).await?;
-
-                let resp: api::InvokeURLResponse = client
-                    .get(&format!(
-                        "/projects/{}/features/{}/invoke_url",
-                        project.id, feature.id
-                    ))
-                    .send()
-                    .await?
-                    .error_body_for_status()
-                    .await?
-                    .json()
-                    .await?;
-                println!("{}", resp.url);
-                Ok(())
+                feature_get_url(&project, &feature, &client).await
             }
             cli::FeatureCommand::Logs { feature, follow } => {
                 let (project_name, feature_name) = feature.split();
                 let project = resolve_project_id(&client, &project_name).await?;
                 let feature = resolve_feature_id(&client, &project, &feature_name).await?;
-
                 feature_logs(&project, &feature, *follow, &client).await
             }
         },
@@ -876,6 +902,37 @@ async fn main() -> Result<()> {
                 Ok(())
             }
         },
+        // Convenience aliases
+        cli::Command::Deploy { feature } => {
+            let (project_name, feature_name) = feature.split();
+            let project = resolve_project_id(&client, &project_name).await?;
+            let feature = resolve_feature_id(&client, &project, &feature_name).await?;
+            feature_deploy(&project, &feature, &client).await
+        }
+        cli::Command::DeployStatus { feature } => {
+            let (project_name, feature_name) = feature.split();
+            let project = resolve_project_id(&client, &project_name).await?;
+            let feature = resolve_feature_id(&client, &project, &feature_name).await?;
+            feature_deploy_status(&project, &feature, &client).await
+        }
+        cli::Command::Teardown { feature } => {
+            let (project_name, feature_name) = feature.split();
+            let project = resolve_project_id(&client, &project_name).await?;
+            let feature = resolve_feature_id(&client, &project, &feature_name).await?;
+            feature_teardown(&project, &feature, &client).await
+        }
+        cli::Command::GetURL { feature } => {
+            let (project_name, feature_name) = feature.split();
+            let project = resolve_project_id(&client, &project_name).await?;
+            let feature = resolve_feature_id(&client, &project, &feature_name).await?;
+            feature_get_url(&project, &feature, &client).await
+        }
+        cli::Command::Logs { feature, follow } => {
+            let (project_name, feature_name) = feature.split();
+            let project = resolve_project_id(&client, &project_name).await?;
+            let feature = resolve_feature_id(&client, &project, &feature_name).await?;
+            feature_logs(&project, &feature, *follow, &client).await
+        }
         cli::Command::Version => unreachable!(),
         cli::Command::Login => unreachable!(),
     }
