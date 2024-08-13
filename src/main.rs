@@ -12,14 +12,15 @@ use std::pin::Pin;
 use std::process::Command;
 use std::time::Duration;
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _};
 use tokio_util::io::StreamReader;
 use url::Url;
 
 mod api;
-
 mod cli;
 use cli::{Cli, IdOrName};
+mod chat;
+use chat::start_chat;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Config {
@@ -29,7 +30,8 @@ struct Config {
 
 struct APIClient {
     client: reqwest::Client,
-    base_url: Url,
+    pub base_url: Url,
+    pub token: String,
 }
 
 impl APIClient {
@@ -41,6 +43,7 @@ impl APIClient {
                 .user_agent("bismuthcloud-cli")
                 .build()?,
             base_url,
+            token: token.to_string(),
         })
     }
     fn get(&self, path: &str) -> reqwest::RequestBuilder {
@@ -156,6 +159,26 @@ fn project_clone(project: &api::Project, api_url: &Url, outdir: Option<&Path>) -
                 Ok(())
             } else {
                 Err(anyhow!("Failed to clone ({})", o.status))
+            }
+        })?;
+    Command::new("git")
+        .arg("remote")
+        .arg("add")
+        .arg("bismuth")
+        .arg(
+            auth_url
+                .join(&format!("/git/{}", project.hash))?
+                .to_string(),
+        )
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .map_err(|e| anyhow!(e))
+        .and_then(|o| {
+            if o.status.success() {
+                Ok(())
+            } else {
+                Err(anyhow!("Failed to add bismuth remote ({})", o.status))
             }
         })?;
 
@@ -417,8 +440,11 @@ async fn main() -> Result<()> {
             print!("> ");
             std::io::stdout().flush()?;
 
-            let mut org_selector = String::new();
-            std::io::stdin().read_line(&mut org_selector)?;
+            let org_selector = tokio::io::BufReader::new(tokio::io::stdin())
+                .lines()
+                .next_line()
+                .await?
+                .unwrap_or("".to_string());
 
             if let Ok(org_idx) = org_selector.trim().parse::<usize>() {
                 if org_idx > organizations.len() {
@@ -574,8 +600,12 @@ async fn main() -> Result<()> {
                     project.name
                 );
                 std::io::stdout().flush()?;
-                let mut confirm = String::new();
-                std::io::stdin().read_line(&mut confirm)?;
+
+                let confirm = tokio::io::BufReader::new(tokio::io::stdin())
+                    .lines()
+                    .next_line()
+                    .await?
+                    .unwrap_or("n".to_string());
                 if confirm.trim().to_lowercase() != "y" {
                     return Ok(());
                 }
@@ -932,6 +962,38 @@ async fn main() -> Result<()> {
             let project = resolve_project_id(&client, &project_name).await?;
             let feature = resolve_feature_id(&client, &project, &feature_name).await?;
             feature_logs(&project, &feature, *follow, &client).await
+        }
+        cli::Command::Chat { feature, repo } => {
+            let (project_name, feature_name) = feature.split();
+            let project = resolve_project_id(&client, &project_name).await?;
+            let feature = resolve_feature_id(&client, &project, &feature_name).await?;
+            let repo_path = match repo {
+                Some(repo) => {
+                    if repo.exists() {
+                        repo.to_path_buf()
+                    } else {
+                        project_clone(&project, &args.global.api_url, Some(repo))?
+                    }
+                }
+                None => {
+                    // Check if CWD is a git repo which has the correct remote
+                    let remote_url = Command::new("git")
+                        .arg("remote")
+                        .arg("get-url")
+                        .arg("bismuth")
+                        .output()
+                        .map_err(|e| anyhow!(e))
+                        .and_then(|o| String::from_utf8(o.stdout).map_err(|e| anyhow!(e)))
+                        .map(|o| o.trim().to_string())
+                        .unwrap_or("".to_string());
+                    if remote_url.contains(&project.clone_token) {
+                        std::env::current_dir().unwrap()
+                    } else {
+                        project_clone(&project, &args.global.api_url, None)?
+                    }
+                }
+            };
+            start_chat(&project, &feature, &repo_path, &client).await
         }
         cli::Command::Version => unreachable!(),
         cli::Command::Login => unreachable!(),

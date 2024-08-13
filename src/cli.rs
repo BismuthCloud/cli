@@ -147,6 +147,15 @@ pub enum Command {
         #[clap(short, long, default_value_t = false)]
         follow: bool,
     },
+    /// Interact with the Bismuth AI
+    Chat {
+        #[clap(flatten)]
+        feature: FeatureRef,
+        /// The cloned repository.
+        /// If not specified, checks if the current directory is a clone of the project.
+        /// If not, the repo is automatically cloned into a new folder in the current directory.
+        repo: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
