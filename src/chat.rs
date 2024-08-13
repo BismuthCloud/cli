@@ -1,8 +1,8 @@
-use std::{collections::HashMap, io::Write as _, path::Path, sync::Arc};
+use std::{collections::HashMap, io::Write as _, path::Path, process::Command, sync::Arc};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use futures::{pin_mut, SinkExt, StreamExt};
-use log::debug;
+use log::{debug, trace};
 use tokio::io::AsyncReadExt as _;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
@@ -42,32 +42,76 @@ fn extract_bismuth_files_from_code_block(data: &str) -> HashMap<String, String> 
     files
 }
 
-async fn process_chat_message(repo: &Path, message: &str) -> Result<()> {
-    let repo = std::fs::canonicalize(repo)?;
+async fn process_chat_message(repo_path: &Path, message: &str) -> Result<()> {
+    let repo_path = std::fs::canonicalize(repo_path)?;
+    let repo = git2::Repository::open(&repo_path)?;
+
     let blocks = markdown::tokenize(message);
+
     for (language, code) in blocks.iter().filter_map(|block| match block {
         markdown::Block::CodeBlock(language, content) => Some((language, content)),
         _ => None,
     }) {
         let files = extract_bismuth_files_from_code_block(code);
         for (file_name, content) in files {
+            trace!("Writing file: {}", file_name);
             let mut file_name = file_name.as_str();
             file_name = file_name.trim_start_matches('/');
-            let full_path = repo.join(file_name);
-            if !full_path.starts_with(&repo) {
+            let full_path = repo_path.join(file_name);
+            if !full_path.starts_with(&repo_path) {
                 return Err(anyhow::anyhow!("Invalid file path"));
             }
             std::fs::create_dir_all(full_path.parent().unwrap())?;
             std::fs::write(full_path, content)?;
         }
     }
+
+    let mut index = repo.index()?;
+    index.add_all(&["*"], git2::IndexAddOption::DEFAULT, None)?;
+    index.write()?;
+
+    Command::new("git")
+        .arg("-C")
+        .arg(&repo_path)
+        .arg("--no-pager")
+        .arg("diff")
+        .arg("--staged")
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .map_err(|e| anyhow!(e))
+        .and_then(|o| {
+            if o.status.success() {
+                Ok(())
+            } else {
+                Err(anyhow!("Failed to show diff ({})", o.status))
+            }
+        })?;
+
+    let tree_id = index.write_tree()?;
+    let tree = repo.find_tree(tree_id)?;
+
+    let head = repo.head()?;
+    let parent_commit = repo.find_commit(head.target().unwrap())?;
+
+    let signature = git2::Signature::now("Bismuth", "committer@app.bismuth.cloud")?;
+
+    repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        "foo",
+        &tree,
+        &[&parent_commit],
+    )?;
+
     Ok(())
 }
 
 pub async fn start_chat(
     project: &api::Project,
     feature: &api::Feature,
-    repo: &Path,
+    repo_path: &Path,
     client: &APIClient,
 ) -> Result<()> {
     let scrollback: Vec<api::ChatMessage> = client
@@ -146,7 +190,9 @@ pub async fn start_chat(
                             } => {
                                 // TODO: clear the whole thing
                                 println!("\x1b[2K\r{}", generated_text);
-                                process_chat_message(repo, &generated_text).await.unwrap();
+                                process_chat_message(repo_path, &generated_text)
+                                    .await
+                                    .unwrap();
                                 buffer.clear();
                                 print!("> ");
                                 std::io::stdout().flush().unwrap();

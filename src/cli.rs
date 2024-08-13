@@ -149,12 +149,14 @@ pub enum Command {
     },
     /// Interact with the Bismuth AI
     Chat {
-        #[clap(flatten)]
-        feature: FeatureRef,
         /// The cloned repository.
         /// If not specified, checks if the current directory is a clone of the project.
         /// If not, the repo is automatically cloned into a new folder in the current directory.
+        #[clap(long)]
         repo: Option<PathBuf>,
+        /// The project/feature to work on.
+        /// If not specified, attempt to find based on the provided (or current) directory.
+        feature: Option<String>,
     },
 }
 

@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use clap::Parser as _;
 use colored::Colorize;
 use futures::{StreamExt as _, TryStreamExt};
+use git2::WorktreeAddOptions;
 use log::debug;
 use reqwest_eventsource::EventSource;
 use serde::{Deserialize, Serialize};
@@ -83,13 +84,14 @@ impl ResponseErrorExt for reqwest::Response {
 async fn resolve_project_id(client: &APIClient, id: &IdOrName) -> Result<api::Project> {
     let project_id = match id {
         cli::IdOrName::Name(name) => {
-            let get_projects = client
+            let projects: api::ListProjectsResponse = client
                 .get("/projects/list")
                 .send()
                 .await?
                 .error_body_for_status()
+                .await?
+                .json()
                 .await?;
-            let projects: api::ListProjectsResponse = get_projects.json().await?;
             let project = projects
                 .projects
                 .iter()
@@ -133,6 +135,45 @@ async fn resolve_feature_id(
     Ok(get_feature.json().await?)
 }
 
+async fn get_project_and_feature_for_repo(
+    client: &APIClient,
+    repo: &Path,
+) -> Result<(api::Project, api::Feature)> {
+    if !repo.join(".git").is_dir() {
+        return Err(anyhow!(
+            "Unable to determine project and feature (path is not a git repository)"
+        ));
+    }
+    let repo = git2::Repository::open(repo)?;
+    let remote_url = repo.find_remote("bismuth")?.url().unwrap().to_string();
+    let branch_name = repo.head()?.shorthand().unwrap().to_string();
+
+    for project in &client
+        .get("/projects/list")
+        .send()
+        .await?
+        .error_body_for_status()
+        .await?
+        .json::<api::ListProjectsResponse>()
+        .await?
+        .projects
+    {
+        if remote_url.contains(&project.clone_token) {
+            for feature in &project.features {
+                if branch_name == feature.name {
+                    return Ok((project.clone(), feature.clone()));
+                }
+            }
+            return Err(anyhow!(
+                "Unable to determine feature (branch name does not match)"
+            ));
+        }
+    }
+    return Err(anyhow!(
+        "Unable to determine project (no matching projects found)"
+    ));
+}
+
 fn project_clone(project: &api::Project, api_url: &Url, outdir: Option<&Path>) -> Result<PathBuf> {
     let mut auth_url = api_url.clone();
     auth_url.set_password(Some(&project.clone_token)).unwrap();
@@ -142,13 +183,13 @@ fn project_clone(project: &api::Project, api_url: &Url, outdir: Option<&Path>) -
         .unwrap_or(PathBuf::from(&project.name));
     debug!("Cloning project to {:?}", outdir);
 
+    let remote_url = auth_url
+        .join(&format!("/git/{}", project.hash))?
+        .to_string();
+
     Command::new("git")
         .arg("clone")
-        .arg(
-            auth_url
-                .join(&format!("/git/{}", project.hash))?
-                .to_string(),
-        )
+        .arg(&remote_url)
         .arg(&outdir)
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
@@ -161,26 +202,9 @@ fn project_clone(project: &api::Project, api_url: &Url, outdir: Option<&Path>) -
                 Err(anyhow!("Failed to clone ({})", o.status))
             }
         })?;
-    Command::new("git")
-        .arg("remote")
-        .arg("add")
-        .arg("bismuth")
-        .arg(
-            auth_url
-                .join(&format!("/git/{}", project.hash))?
-                .to_string(),
-        )
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .output()
-        .map_err(|e| anyhow!(e))
-        .and_then(|o| {
-            if o.status.success() {
-                Ok(())
-            } else {
-                Err(anyhow!("Failed to add bismuth remote ({})", o.status))
-            }
-        })?;
+
+    let repo = git2::Repository::open(&outdir)?;
+    repo.remote("bismuth", &remote_url)?;
 
     Ok(outdir)
 }
@@ -541,6 +565,7 @@ async fn main() -> Result<()> {
                     .clone()
                     .join(&format!("/git/{}", project.hash))?;
                 git_url.set_password(Some(&project.clone_token)).unwrap();
+                // TODO: convert to git2
                 Command::new("git")
                     .arg("-C")
                     .arg(repo.as_path())
@@ -964,9 +989,30 @@ async fn main() -> Result<()> {
             feature_logs(&project, &feature, *follow, &client).await
         }
         cli::Command::Chat { feature, repo } => {
-            let (project_name, feature_name) = feature.split();
-            let project = resolve_project_id(&client, &project_name).await?;
-            let feature = resolve_feature_id(&client, &project, &feature_name).await?;
+            let (project, feature) = match feature {
+                Some(feature) => {
+                    let (project_name, feature_name) = cli::FeatureRef {
+                        feature: feature.to_string(),
+                    }
+                    .split();
+                    let project = resolve_project_id(&client, &project_name).await?;
+                    let feature = resolve_feature_id(&client, &project, &feature_name).await?;
+                    (project, feature)
+                }
+                None => {
+                    let repo_path = match repo {
+                        Some(repo) => {
+                            if repo.exists() {
+                                repo.to_path_buf()
+                            } else {
+                                return Err(anyhow!("Repo does not exist"));
+                            }
+                        }
+                        _ => std::env::current_dir()?,
+                    };
+                    get_project_and_feature_for_repo(&client, &repo_path).await?
+                }
+            };
             let repo_path = match repo {
                 Some(repo) => {
                     if repo.exists() {
@@ -977,14 +1023,10 @@ async fn main() -> Result<()> {
                 }
                 None => {
                     // Check if CWD is a git repo which has the correct remote
-                    let remote_url = Command::new("git")
-                        .arg("remote")
-                        .arg("get-url")
-                        .arg("bismuth")
-                        .output()
-                        .map_err(|e| anyhow!(e))
-                        .and_then(|o| String::from_utf8(o.stdout).map_err(|e| anyhow!(e)))
-                        .map(|o| o.trim().to_string())
+                    let repo = git2::Repository::open_from_env()?;
+                    let remote_url = repo
+                        .find_remote("bismuth")
+                        .map(|r| r.url().unwrap().to_string())
                         .unwrap_or("".to_string());
                     if remote_url.contains(&project.clone_token) {
                         std::env::current_dir().unwrap()
@@ -993,7 +1035,38 @@ async fn main() -> Result<()> {
                     }
                 }
             };
-            start_chat(&project, &feature, &repo_path, &client).await
+            let git_repo = git2::Repository::open(&repo_path)?;
+
+            let worktree_base = Path::new("/tmp/bismuthWorktrees");
+            if !worktree_base.exists() {
+                tokio::fs::create_dir_all(worktree_base).await?;
+            }
+            let worktree_path = worktree_base.join(format!("{}-{}", project.id, feature.id));
+            if !worktree_path.exists() {
+                let worktree_branch = format!("{}-cli-chat", feature.name);
+                debug!("Creating new worktree");
+
+                if git_repo
+                    .find_branch(&worktree_branch, git2::BranchType::Local)
+                    .is_err()
+                {
+                    debug!("Creating new branch");
+                    git_repo.branch(
+                        &worktree_branch,
+                        &git_repo.head()?.peel_to_commit()?,
+                        false,
+                    )?;
+                }
+
+                git_repo.worktree(
+                    &worktree_branch,
+                    &worktree_path,
+                    Some(WorktreeAddOptions::new().reference(Some(
+                        &git_repo.resolve_reference_from_short_name(&worktree_branch)?,
+                    ))),
+                )?;
+            }
+            start_chat(&project, &feature, &worktree_path, &client).await
         }
         cli::Command::Version => unreachable!(),
         cli::Command::Login => unreachable!(),
