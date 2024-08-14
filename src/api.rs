@@ -50,7 +50,7 @@ pub struct InvokeURLResponse {
     pub url: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct User {
     pub id: u64,
     pub email: String,
@@ -58,7 +58,7 @@ pub struct User {
     pub name: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChatMessage {
     #[serde(rename = "isAI")]
     pub is_ai: bool,
