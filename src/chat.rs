@@ -171,11 +171,31 @@ fn commit(repo_path: &Path) -> Result<()> {
 
     let signature = git2::Signature::now("Bismuth", "committer@app.bismuth.cloud")?;
 
+    let diff = repo.diff_tree_to_index(Some(&parent_commit.tree()?), Some(&index), None)?;
+    let mut changed_files = vec![];
+    diff.foreach(
+        &mut |delta, _| {
+            changed_files.push(
+                delta
+                    .new_file()
+                    .path()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
+            );
+            true
+        },
+        None,
+        None,
+        None,
+    )?;
+
     repo.commit(
         Some("HEAD"),
         &signature,
         &signature,
-        "TODO",
+        format!("Bismuth: {}", changed_files.join(", ")).as_str(),
         &tree,
         &[&parent_commit],
     )?;
