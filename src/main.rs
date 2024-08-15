@@ -1035,6 +1035,7 @@ async fn main() -> Result<()> {
                     }
                 }
             };
+            /*
             let git_repo = git2::Repository::open(&repo_path)?;
 
             let worktree_base = Path::new("/tmp/bismuthWorktrees");
@@ -1066,7 +1067,8 @@ async fn main() -> Result<()> {
                     ))),
                 )?;
             }
-            start_chat(&project, &feature, &worktree_path, &client).await
+            */
+            start_chat(&project, &feature, &repo_path, &client).await
         }
         cli::Command::Version => unreachable!(),
         cli::Command::Login => unreachable!(),
