@@ -30,6 +30,7 @@ pub struct Project {
     pub features: Vec<Feature>,
     pub clone_token: String,
     pub github_repo: Option<String>,
+    pub github_app_install: Option<GitHubAppInstall>,
 }
 
 #[derive(Debug, Serialize)]
@@ -86,12 +87,12 @@ impl Display for GitHubRepo {
 #[serde(rename_all = "camelCase")]
 pub struct GitHubAppInstall {
     pub installation_id: u64,
-    pub organization: String,
+    pub organization: Option<String>,
 }
 
 impl Display for GitHubAppInstall {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.organization)
+        write!(f, "{}", self.organization.as_ref().unwrap())
     }
 }
 

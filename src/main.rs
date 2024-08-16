@@ -230,13 +230,23 @@ fn project_clone(project: &api::Project, api_url: &Url, outdir: Option<&Path>) -
         .unwrap_or(PathBuf::from(&project.name));
     debug!("Cloning project to {:?}", outdir);
 
-    let remote_url = auth_url
+    let bismuth_remote_url = auth_url
         .join(&format!("/git/{}", project.hash))?
         .to_string();
 
+    let clone_url = match &project.github_app_install {
+        Some(_) => {
+            format!(
+                "git@github.com:{}.git",
+                project.github_repo.as_ref().unwrap()
+            )
+        }
+        None => bismuth_remote_url.clone(),
+    };
+
     Command::new("git")
         .arg("clone")
-        .arg(&remote_url)
+        .arg(&clone_url)
         .arg(&outdir)
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
@@ -251,7 +261,7 @@ fn project_clone(project: &api::Project, api_url: &Url, outdir: Option<&Path>) -
         })?;
 
     let repo = git2::Repository::open(&outdir)?;
-    repo.remote("bismuth", &remote_url)?;
+    repo.remote("bismuth", &bismuth_remote_url)?;
 
     Ok(outdir)
 }
