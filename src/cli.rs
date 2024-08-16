@@ -160,6 +160,18 @@ pub enum Command {
     },
 }
 
+#[derive(Debug, Args)]
+#[group(required = true, multiple = false)]
+pub struct ImportSource {
+    /// The path to the Git repository to import. Defaults to the current directory.
+    #[arg(long)]
+    pub repo: Option<PathBuf>,
+
+    /// Import a repository from GitHub.
+    #[arg(long)]
+    pub github: bool,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum ProjectCommand {
     /// List all projects
@@ -167,11 +179,11 @@ pub enum ProjectCommand {
     /// Create a new project
     Create { name: String },
     /// Create a new Bismuth project, and import an existing Git repository into it
-    Import {
-        /// The name of the new project
-        name: String,
-        /// The path to the Git repository to import. Defaults to the current directory.
-        repo: Option<PathBuf>,
+    Import(ImportSource),
+    /// Link a project to a GitHub repository.
+    Link {
+        /// The project to link
+        project: IdOrName,
     },
     /// Clone the project for local development
     Clone {

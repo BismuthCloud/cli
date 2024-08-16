@@ -260,10 +260,7 @@ impl CodeBlock {
 
         let ps = SyntaxSet::load_defaults_newlines();
         let ts = ThemeSet::load_defaults();
-        let mut theme = ts.themes["base16-ocean.dark"].clone();
-        // Force black background so it matches the chat history widget
-        // If set to None, the background defaults white not transparent :(
-        theme.settings.background = Some(syntect::highlighting::Color::BLACK);
+        let theme = ts.themes["base16-ocean.dark"].clone();
         let syntax = ps
             .find_syntax_by_extension(match language {
                 Some("python") => "py",
@@ -278,7 +275,11 @@ impl CodeBlock {
                     h.highlight_line(line, &ps)
                         .unwrap()
                         .into_iter()
-                        .filter_map(|segment| into_span(segment).ok())
+                        .filter_map(|segment| {
+                            into_span(segment)
+                                .ok()
+                                .map(|span| span.bg(ratatui::style::Color::Reset))
+                        })
                         .collect::<Vec<Span>>(),
                 )
             })
@@ -398,8 +399,7 @@ impl Widget for &mut ChatHistoryWidget {
     fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
         let block = ratatui::widgets::Block::new()
             .title("Chat History")
-            .borders(ratatui::widgets::Borders::ALL)
-            .bg(ratatui::style::Color::Black);
+            .borders(ratatui::widgets::Borders::ALL);
 
         let mut line_idx = 0;
         // start,end line idxs for each code block
@@ -419,7 +419,11 @@ impl Widget for &mut ChatHistoryWidget {
                                 let code_block_lines = if code.folded {
                                     vec![Line::styled(
                                         title_case(
-                                            &format!("{} code block ▼", &code.language).trim(),
+                                            &format!(
+                                                "{} code block (click to expand)",
+                                                &code.language
+                                            )
+                                            .trim(),
                                         ),
                                         ratatui::style::Style::default()
                                             .fg(ratatui::style::Color::Yellow),
@@ -532,10 +536,13 @@ enum AppState {
 
 struct App {
     repo_path: PathBuf,
+    user: api::User,
     /// Chat is always present in the background so this is not kept in the state
     chat_history: ChatHistoryWidget,
     /// Current chatbox input
     input: String,
+    input_cursor: usize,
+
     ws_stream: Option<
         tokio_tungstenite::WebSocketStream<
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -547,6 +554,7 @@ struct App {
 impl App {
     fn new(
         repo_path: &Path,
+        current_user: &api::User,
         chat_history: &[ChatMessage],
         ws_stream: tokio_tungstenite::WebSocketStream<
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -554,6 +562,7 @@ impl App {
     ) -> Self {
         Self {
             repo_path: repo_path.to_path_buf(),
+            user: current_user.clone(),
             chat_history: ChatHistoryWidget {
                 messages: Arc::new(Mutex::new(chat_history.to_vec())),
                 scroll_position: 0,
@@ -562,6 +571,7 @@ impl App {
                 code_block_hitboxes: vec![],
             },
             input: String::new(),
+            input_cursor: 0,
             ws_stream: Some(ws_stream),
             state: Arc::new(Mutex::new(AppState::Chat)),
         }
@@ -608,8 +618,8 @@ impl App {
                             } => {
                                 {
                                     let mut scrollback = scrollback.lock().unwrap();
-                                    scrollback.last_mut().unwrap().raw_content =
-                                        generated_text.clone();
+                                    let last = scrollback.last_mut().unwrap();
+                                    *last = ChatMessage::new(ChatMessageUser::AI, &generated_text);
                                 }
 
                                 if let Some(diff) =
@@ -647,6 +657,7 @@ impl App {
                     self.state.clone(),
                     &mut self.chat_history,
                     &self.input,
+                    self.input_cursor,
                 )
             })?;
             if !event::poll(Duration::from_millis(100))? {
@@ -791,11 +802,46 @@ impl App {
                         _ => {}
                     },
                     Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
+                        KeyCode::Char('w')
+                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                        {
+                            if self.input_cursor > 0 {
+                                self.input_cursor -= 1;
+                                self.input.remove(self.input_cursor);
+                                while !self.input.is_empty()
+                                    && self.input_cursor > 0
+                                    && !&self.input[..self.input_cursor].ends_with(' ')
+                                {
+                                    self.input_cursor -= 1;
+                                    self.input.remove(self.input_cursor);
+                                }
+                            }
+                        }
+                        KeyCode::Char('e')
+                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                        {
+                            self.input_cursor = self.input.len();
+                        }
+                        KeyCode::Char('a')
+                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                        {
+                            self.input_cursor = 0;
+                        }
                         KeyCode::Char(c) => {
-                            self.input.push(c);
+                            self.input.insert(self.input_cursor, c);
+                            self.input_cursor += 1;
                         }
                         KeyCode::Backspace => {
-                            self.input.pop();
+                            if self.input_cursor > 0 {
+                                self.input.remove(self.input_cursor - 1);
+                                self.input_cursor -= 1;
+                            }
+                        }
+                        KeyCode::Left => {
+                            self.input_cursor = self.input_cursor.saturating_sub(1);
+                        }
+                        KeyCode::Right => {
+                            self.input_cursor = (self.input_cursor + 1).min(self.input.len());
                         }
                         KeyCode::Esc => {
                             let mut state = self.state.lock().unwrap();
@@ -858,11 +904,12 @@ impl App {
                 }
             }
             self.input.clear();
+            self.input_cursor = 0;
             return Ok(());
         }
         let mut scrollback = self.chat_history.messages.lock().unwrap();
         scrollback.push(ChatMessage::new(
-            ChatMessageUser::User("You".to_string()),
+            ChatMessageUser::User(self.user.name.clone()),
             &self.input,
         ));
         scrollback.push(ChatMessage::new(ChatMessageUser::AI, ""));
@@ -888,13 +935,16 @@ impl App {
                 .into(),
             ))
             .await?;
+
         self.input.clear();
+        self.input_cursor = 0;
 
         Ok(())
     }
 }
 
 pub async fn start_chat(
+    current_user: &api::User,
     project: &api::Project,
     feature: &api::Feature,
     repo_path: &Path,
@@ -937,7 +987,7 @@ pub async fn start_chat(
 
     debug!("Connected to chat");
 
-    let mut app = App::new(&repo_path, &scrollback, ws_stream);
+    let mut app = App::new(&repo_path, current_user, &scrollback, ws_stream);
 
     let status = app.run().await;
     terminal::restore();
@@ -950,6 +1000,7 @@ fn ui(
     state: Arc<Mutex<AppState>>,
     chat_history: &mut ChatHistoryWidget,
     input: &str,
+    input_cursor: usize,
 ) {
     let vertical = ratatui::layout::Layout::vertical([
         ratatui::layout::Constraint::Percentage(100),
@@ -963,7 +1014,7 @@ fn ui(
         Paragraph::new(input).block(ratatui::widgets::Block::bordered().title("Message"));
     frame.render_widget(input_widget, input_area);
 
-    frame.set_cursor(input_area.x + input.len() as u16 + 1, input_area.y + 1);
+    frame.set_cursor(input_area.x + input_cursor as u16 + 1, input_area.y + 1);
 
     let mut state = state.lock().unwrap();
     match &mut *state {

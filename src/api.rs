@@ -1,9 +1,17 @@
+use std::fmt::Display;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Organization {
     pub id: u64,
     pub name: String,
+}
+
+impl Display for Organization {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -13,19 +21,22 @@ pub struct Feature {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Project {
     pub id: u64,
     pub name: String,
     pub hash: String,
     pub organization: Organization,
     pub features: Vec<Feature>,
-    #[serde(rename = "cloneToken")]
     pub clone_token: String,
+    pub github_repo: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
-pub struct CreateProjectRequest {
-    pub name: String,
+#[serde(untagged)]
+pub enum CreateProjectRequest {
+    Name(String),
+    Repo(GitHubRepo),
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,12 +61,38 @@ pub struct InvokeURLResponse {
     pub url: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct User {
     pub id: u64,
     pub email: String,
     pub username: String,
     pub name: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubRepo {
+    pub installation_id: u64,
+    pub repo: String,
+}
+
+impl Display for GitHubRepo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.repo)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubAppInstall {
+    pub installation_id: u64,
+    pub organization: String,
+}
+
+impl Display for GitHubAppInstall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.organization)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
