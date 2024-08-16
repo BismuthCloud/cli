@@ -1,6 +1,4 @@
 use std::{
-    borrow::Borrow,
-    cell::RefCell,
     collections::HashMap,
     path::{Path, PathBuf},
     process::Command,
@@ -9,22 +7,22 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
-use futures::{stream::SplitSink, SinkExt, Stream, StreamExt, TryStreamExt};
+use futures::{stream::SplitSink, SinkExt, StreamExt, TryStreamExt};
 use git2::DiffOptions;
-use log::{debug, error, trace};
+use log::{debug, trace};
 use ratatui::{
     crossterm::event::{self, Event, KeyCode, MouseButton},
-    layout::{Constraint, Layout, Position, Rect},
+    layout::{Constraint, Layout, Rect},
     style::Stylize,
     text::{Line, Span},
     widgets::{Block, Clear, Paragraph, Scrollbar, StatefulWidget, Widget},
 };
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{Style, ThemeSet};
+use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 use syntect_tui::into_span;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message, WebSocketStream};
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
 use crate::{api, APIClient, ResponseErrorExt as _};
 
@@ -90,10 +88,7 @@ fn list_changed_files(repo_path: &Path) -> Result<Vec<PathBuf>> {
     Ok(changed_files)
 }
 
-fn process_chat_message(
-    repo_path: &Path,
-    message: &str,
-) -> Result<Option<(Vec<markdown::unist::Position>, String)>> {
+fn process_chat_message(repo_path: &Path, message: &str) -> Result<Option<String>> {
     let repo_path = std::fs::canonicalize(repo_path)?;
     let repo = git2::Repository::open(&repo_path)?;
 
@@ -115,7 +110,7 @@ fn process_chat_message(
 
     let mut positions = vec![];
 
-    // TODO: do we return a position+string for each code block?
+    // TODO: do we return a diff for each code block?
     for md_code_block in &code_blocks {
         // This will often only be 1 file, but sometimes the model will output multiple files
         // in one code block.
@@ -142,8 +137,6 @@ fn process_chat_message(
         .arg("-C")
         .arg(&repo_path)
         .arg("--no-pager")
-        .arg("-c")
-        .arg("color.ui=always")
         .arg("diff")
         .arg("--staged")
         .output()
@@ -157,7 +150,7 @@ fn process_chat_message(
         })
         .and_then(|s| String::from_utf8(s).map_err(|e| anyhow!(e)))?;
 
-    Ok(Some((positions, diff)))
+    Ok(Some(diff))
 }
 
 fn commit(repo_path: &Path) -> Result<()> {
@@ -397,7 +390,7 @@ struct ChatHistoryWidget {
     messages: Arc<Mutex<Vec<ChatMessage>>>,
     scroll_position: usize,
     scroll_max: usize,
-    chat_scroll_state: ratatui::widgets::ScrollbarState,
+    scroll_state: ratatui::widgets::ScrollbarState,
     code_block_hitboxes: Vec<(usize, usize)>,
 }
 
@@ -425,7 +418,9 @@ impl Widget for &mut ChatHistoryWidget {
                             MessageBlock::Code(code) => {
                                 let code_block_lines = if code.folded {
                                     vec![Line::styled(
-                                        format!("{} code block ▼", title_case(&code.language)),
+                                        title_case(
+                                            &format!("{} code block ▼", &code.language).trim(),
+                                        ),
                                         ratatui::style::Style::default()
                                             .fg(ratatui::style::Color::Yellow),
                                     )]
@@ -459,7 +454,7 @@ impl Widget for &mut ChatHistoryWidget {
         // +3 so you can scroll past the bottom a bit to see this is really the end
         let nlines = paragraph.line_count(area.width - 2) + 3;
         self.scroll_max = nlines.max(area.height as usize) - (area.height as usize);
-        self.chat_scroll_state = self.chat_scroll_state.content_length(self.scroll_max);
+        self.scroll_state = self.scroll_state.content_length(self.scroll_max);
 
         self.code_block_hitboxes = code_block_hitboxes;
 
@@ -468,7 +463,61 @@ impl Widget for &mut ChatHistoryWidget {
             Scrollbar::new(ratatui::widgets::ScrollbarOrientation::VerticalRight),
             area,
             buf,
-            &mut self.chat_scroll_state,
+            &mut self.scroll_state,
+        );
+    }
+}
+
+#[derive(Clone, Debug)]
+struct DiffReviewWidget {
+    diff: String,
+    scroll_position: usize,
+    scroll_max: usize,
+    scroll_state: ratatui::widgets::ScrollbarState,
+}
+
+impl DiffReviewWidget {
+    fn new(diff: String) -> Self {
+        Self {
+            diff,
+            scroll_position: 0,
+            scroll_max: 0,
+            scroll_state: ratatui::widgets::ScrollbarState::default(),
+        }
+    }
+}
+
+impl Widget for &mut DiffReviewWidget {
+    fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
+        let lines = self
+            .diff
+            .lines()
+            .map(|line| {
+                let mut ui_line = Line::raw(line);
+                if line.starts_with('+') && !line.starts_with("+++") {
+                    ui_line = ui_line.green();
+                } else if line.starts_with('-') && !line.starts_with("---") {
+                    ui_line = ui_line.red();
+                }
+                ui_line
+            })
+            .collect::<Vec<_>>();
+        let paragraph = Paragraph::new(lines)
+            .block(Block::bordered().title("Review Diff (y to commit, n to revert)"))
+            .scroll((self.scroll_position as u16, 0));
+
+        let nlines = self.diff.lines().count();
+        self.scroll_max = nlines.max(area.height as usize) - (area.height as usize);
+        self.scroll_state = self.scroll_state.content_length(self.scroll_max);
+
+        let area = centered_paragraph(&paragraph, area);
+        Clear.render(area, buf);
+        paragraph.render(area, buf);
+        StatefulWidget::render(
+            Scrollbar::new(ratatui::widgets::ScrollbarOrientation::VerticalRight),
+            area,
+            buf,
+            &mut self.scroll_state,
         );
     }
 }
@@ -478,7 +527,7 @@ enum AppState {
     Chat,
     Help,
     Exit,
-    ReviewDiff(String),
+    ReviewDiff(DiffReviewWidget),
 }
 
 struct App {
@@ -509,7 +558,7 @@ impl App {
                 messages: Arc::new(Mutex::new(chat_history.to_vec())),
                 scroll_position: 0,
                 scroll_max: 0,
-                chat_scroll_state: ratatui::widgets::ScrollbarState::default(),
+                scroll_state: ratatui::widgets::ScrollbarState::default(),
                 code_block_hitboxes: vec![],
             },
             input: String::new(),
@@ -563,12 +612,11 @@ impl App {
                                         generated_text.clone();
                                 }
 
-                                if let Some((code_block_positions, diff)) =
+                                if let Some(diff) =
                                     process_chat_message(&repo_path, &generated_text).unwrap()
                                 {
                                     let mut state = state.lock().unwrap();
-                                    *state = AppState::ReviewDiff(diff)
-                                    // TODO
+                                    *state = AppState::ReviewDiff(DiffReviewWidget::new(diff));
                                 }
                             }
                         }
@@ -608,23 +656,85 @@ impl App {
                 AppState::Exit => {
                     return Ok(());
                 }
-                AppState::ReviewDiff(_) => {
-                    if let Event::Key(key) = event::read()? {
-                        match key.code {
-                            KeyCode::Char('y') => {
-                                commit(&self.repo_path)?;
-                                let mut state = self.state.lock().unwrap();
-                                *state = AppState::Chat;
-                            }
-                            KeyCode::Char('n') => {
-                                revert(&self.repo_path)?;
-                                let mut state = self.state.lock().unwrap();
-                                *state = AppState::Chat;
-                            }
-                            _ => {}
+                AppState::ReviewDiff(_) => match event::read()? {
+                    Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
+                        KeyCode::Char('y') => {
+                            commit(&self.repo_path)?;
+                            let mut state = self.state.lock().unwrap();
+                            *state = AppState::Chat;
                         }
-                    }
-                }
+                        KeyCode::Char('n') | KeyCode::Esc => {
+                            revert(&self.repo_path)?;
+                            let mut state = self.state.lock().unwrap();
+                            *state = AppState::Chat;
+                        }
+                        KeyCode::Char(' ') => {
+                            let mut state = self.state.lock().unwrap();
+                            if let AppState::ReviewDiff(diff_widget) = &mut *state {
+                                diff_widget.scroll_position = diff_widget
+                                    .scroll_position
+                                    .saturating_add(10)
+                                    .clamp(0, diff_widget.scroll_max);
+                                diff_widget.scroll_state = diff_widget
+                                    .scroll_state
+                                    .position(diff_widget.scroll_position);
+                            }
+                        }
+                        KeyCode::Down => {
+                            let mut state = self.state.lock().unwrap();
+                            if let AppState::ReviewDiff(diff_widget) = &mut *state {
+                                diff_widget.scroll_position = diff_widget
+                                    .scroll_position
+                                    .saturating_add(1)
+                                    .clamp(0, diff_widget.scroll_max);
+                                diff_widget.scroll_state = diff_widget
+                                    .scroll_state
+                                    .position(diff_widget.scroll_position);
+                            }
+                        }
+                        KeyCode::Up => {
+                            let mut state = self.state.lock().unwrap();
+                            if let AppState::ReviewDiff(diff_widget) = &mut *state {
+                                diff_widget.scroll_position = diff_widget
+                                    .scroll_position
+                                    .saturating_sub(1)
+                                    .clamp(0, diff_widget.scroll_max);
+                                diff_widget.scroll_state = diff_widget
+                                    .scroll_state
+                                    .position(diff_widget.scroll_position);
+                            }
+                        }
+                        _ => {}
+                    },
+                    Event::Mouse(mouse) => match mouse.kind {
+                        event::MouseEventKind::ScrollUp => {
+                            let mut state = self.state.lock().unwrap();
+                            if let AppState::ReviewDiff(diff_widget) = &mut *state {
+                                diff_widget.scroll_position = diff_widget
+                                    .scroll_position
+                                    .saturating_sub(1)
+                                    .clamp(0, diff_widget.scroll_max);
+                                diff_widget.scroll_state = diff_widget
+                                    .scroll_state
+                                    .position(diff_widget.scroll_position);
+                            }
+                        }
+                        event::MouseEventKind::ScrollDown => {
+                            let mut state = self.state.lock().unwrap();
+                            if let AppState::ReviewDiff(diff_widget) = &mut *state {
+                                diff_widget.scroll_position = diff_widget
+                                    .scroll_position
+                                    .saturating_add(1)
+                                    .clamp(0, diff_widget.scroll_max);
+                                diff_widget.scroll_state = diff_widget
+                                    .scroll_state
+                                    .position(diff_widget.scroll_position);
+                            }
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                },
                 AppState::Help => {
                     if let Event::Key(_) = event::read()? {
                         let mut state = self.state.lock().unwrap();
@@ -638,9 +748,9 @@ impl App {
                         event::MouseEventKind::ScrollUp => {
                             self.chat_history.scroll_position =
                                 self.chat_history.scroll_position.saturating_sub(1);
-                            self.chat_history.chat_scroll_state = self
+                            self.chat_history.scroll_state = self
                                 .chat_history
-                                .chat_scroll_state
+                                .scroll_state
                                 .position(self.chat_history.scroll_position);
                         }
                         event::MouseEventKind::ScrollDown => {
@@ -649,15 +759,12 @@ impl App {
                                 .scroll_position
                                 .saturating_add(1)
                                 .clamp(0, self.chat_history.scroll_max);
-                            self.chat_history.chat_scroll_state = self
+                            self.chat_history.scroll_state = self
                                 .chat_history
-                                .chat_scroll_state
+                                .scroll_state
                                 .position(self.chat_history.scroll_position);
                         }
                         event::MouseEventKind::Up(btn) if btn == MouseButton::Left => {
-                            dbg!(mouse.row);
-                            dbg!(self.chat_history.scroll_position);
-                            dbg!(&self.chat_history.code_block_hitboxes);
                             let mut messages = self.chat_history.messages.lock().unwrap();
                             let code_blocks = messages.iter_mut().flat_map(|msg| {
                                 msg.blocks.iter_mut().filter_map(|block| match block {
@@ -729,6 +836,18 @@ impl App {
                 }
                 "/docs" => {
                     open::that_detached("https://app.bismuth.cloud/docs")?;
+                }
+                // eh idk if we want this, seems like a good way to lose things even with the name check
+                "/undo" => {
+                    let repo = git2::Repository::open(&self.repo_path)?;
+                    let last = repo.revparse_single("HEAD~1")?;
+                    if last.peel_to_commit()?.author().name().unwrap() == "Bismuth" {
+                        repo.reset(
+                            &repo.revparse_single("HEAD~1")?,
+                            git2::ResetType::Hard,
+                            Some(git2::build::CheckoutBuilder::new().force()),
+                        )?;
+                    }
                 }
                 _ => {
                     let mut scrollback = self.chat_history.messages.lock().unwrap();
@@ -846,13 +965,10 @@ fn ui(
 
     frame.set_cursor(input_area.x + input.len() as u16 + 1, input_area.y + 1);
 
-    match &*state.lock().unwrap() {
-        AppState::ReviewDiff(diff) => {
-            let paragraph = Paragraph::new(diff.clone())
-                .block(Block::bordered().title("Review Diff (y to commit, n to revert)"));
-            let area = centered_rect(60, 80, frame.size());
-            frame.render_widget(Clear, area);
-            frame.render_widget(paragraph, area);
+    let mut state = state.lock().unwrap();
+    match &mut *state {
+        AppState::ReviewDiff(diff_widget) => {
+            frame.render_widget(diff_widget, frame.size());
         }
         AppState::Help => {
             let help_text = r#"/exit or /quit: Exit the chat
@@ -884,23 +1000,6 @@ fn centered_paragraph(paragraph: &Paragraph, r: Rect) -> Rect {
         Constraint::Fill(1),
         Constraint::Length(width),
         Constraint::Fill(1),
-    ])
-    .split(popup_layout[1])[1]
-}
-
-/// helper function to create a centered rect using up certain percentage of the available rect `r`
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let popup_layout = Layout::vertical([
-        Constraint::Percentage((100 - percent_y) / 2),
-        Constraint::Percentage(percent_y),
-        Constraint::Percentage((100 - percent_y) / 2),
-    ])
-    .split(r);
-
-    Layout::horizontal([
-        Constraint::Percentage((100 - percent_x) / 2),
-        Constraint::Percentage(percent_x),
-        Constraint::Percentage((100 - percent_x) / 2),
     ])
     .split(popup_layout[1])[1]
 }
