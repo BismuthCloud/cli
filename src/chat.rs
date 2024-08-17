@@ -315,7 +315,6 @@ impl MessageBlock {
 struct ChatMessage {
     user: ChatMessageUser,
     blocks: Vec<MessageBlock>,
-    raw_content: String,
 }
 
 impl ChatMessage {
@@ -362,11 +361,7 @@ impl ChatMessage {
             blocks.insert(0, MessageBlock::Text(vec![Line::from(prefix_spans)]));
         }
 
-        Self {
-            user,
-            blocks,
-            raw_content: content.to_string(),
-        }
+        Self { user, blocks }
     }
 }
 
@@ -639,11 +634,11 @@ impl App {
                         match stuff {
                             api::ws::ChatMessageBody::StreamingToken { token, .. } => {
                                 let mut scrollback = scrollback.lock().unwrap();
-                                scrollback
-                                    .last_mut()
-                                    .unwrap()
-                                    .raw_content
-                                    .push_str(&token.text);
+                                let last_block =
+                                    scrollback.last_mut().unwrap().blocks.last_mut().unwrap();
+                                if let MessageBlock::Text(lines) = last_block {
+                                    lines.last_mut().unwrap().spans.push(Span::raw(token.text));
+                                }
                             }
                             api::ws::ChatMessageBody::FinalizedMessage {
                                 generated_text, ..
