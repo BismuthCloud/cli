@@ -192,7 +192,17 @@ async fn get_project_and_feature_for_repo(
         ));
     }
     let repo = git2::Repository::open(repo)?;
-    let remote_url = repo.find_remote("bismuth")?.url().unwrap().to_string();
+    let remote_url = repo
+        .find_remote("bismuth")
+        .map_err(|e| {
+            anyhow!(
+                "You must import this repository to Bismuth before using it ({})",
+                e
+            )
+        })?
+        .url()
+        .unwrap()
+        .to_string();
     let branch_name = repo.head()?.shorthand().unwrap().to_string();
 
     for project in &client
@@ -579,7 +589,7 @@ async fn main() -> Result<()> {
                             return Err(anyhow!("Directory is not a git repository"));
                         }
                         let project: api::Project = client
-                            .post("/projects/upsert")
+                            .post("/projects")
                             .json(&api::CreateProjectRequest::Name(
                                 repo.file_name().unwrap().to_string_lossy().to_string(),
                             ))
