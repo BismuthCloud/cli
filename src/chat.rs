@@ -21,8 +21,6 @@ use ratatui::{
     widgets::{Block, Clear, Padding, Paragraph, Scrollbar, StatefulWidget, Widget},
 };
 use syntect::easy::HighlightLines;
-use syntect::highlighting::ThemeSet;
-use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 use syntect_tui::into_span;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
@@ -259,17 +257,21 @@ impl CodeBlock {
     fn new(language: Option<&str>, raw_code: &str) -> Self {
         let raw_code = Box::leak(raw_code.to_string().into_boxed_str());
 
-        let ps = SyntaxSet::load_defaults_newlines();
-        let ts = ThemeSet::load_defaults();
-        let theme = ts.themes["base16-ocean.dark"].clone();
+        let ps = two_face::syntax::extra_newlines();
+        let ts = two_face::theme::extra();
         let syntax = ps
             .find_syntax_by_extension(match language {
                 Some("python") => "py",
                 Some("markdown") => "md",
+                Some("javascript") => "js",
+                Some("typescript") => "tsx",
                 _ => "txt",
             })
             .unwrap();
-        let mut h = HighlightLines::new(syntax, &theme);
+        let mut h = HighlightLines::new(
+            syntax,
+            ts.get(two_face::theme::EmbeddedThemeName::Base16OceanDark),
+        );
         let lines = LinesWithEndings::from(raw_code)
             .map(|line| {
                 Line::from(
@@ -650,8 +652,10 @@ impl App {
                                 if let Some(diff) =
                                     process_chat_message(&repo_path, &generated_text).unwrap()
                                 {
-                                    let mut state = state.lock().unwrap();
-                                    *state = AppState::ReviewDiff(DiffReviewWidget::new(diff));
+                                    if !diff.is_empty() {
+                                        let mut state = state.lock().unwrap();
+                                        *state = AppState::ReviewDiff(DiffReviewWidget::new(diff));
+                                    }
                                 }
                             }
                         }
