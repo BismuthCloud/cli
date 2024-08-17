@@ -1131,6 +1131,20 @@ async fn main() -> Result<()> {
                     }
                 }
             };
+            Command::new("git")
+                .arg("-C")
+                .arg(&repo_path)
+                .arg("fetch")
+                .arg("bismuth")
+                .output()
+                .map_err(|e| anyhow!(e))
+                .and_then(|o| {
+                    if o.status.success() {
+                        Ok(())
+                    } else {
+                        Err(anyhow!("Failed to fetch ({})", o.status))
+                    }
+                })?;
             /*
             let git_repo = git2::Repository::open(&repo_path)?;
 
