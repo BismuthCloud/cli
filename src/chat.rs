@@ -11,11 +11,14 @@ use futures::{stream::SplitSink, SinkExt, StreamExt, TryStreamExt};
 use git2::DiffOptions;
 use log::{debug, trace};
 use ratatui::{
-    crossterm::event::{self, Event, KeyCode, MouseButton},
+    crossterm::{
+        cursor::SetCursorStyle,
+        event::{self, Event, KeyCode, MouseButton},
+    },
     layout::{Constraint, Layout, Rect},
     style::Stylize,
     text::{Line, Span},
-    widgets::{Block, Clear, Paragraph, Scrollbar, StatefulWidget, Widget},
+    widgets::{Block, Clear, Padding, Paragraph, Scrollbar, StatefulWidget, Widget},
 };
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
@@ -399,7 +402,8 @@ impl Widget for &mut ChatHistoryWidget {
     fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
         let block = ratatui::widgets::Block::new()
             .title("Chat History")
-            .borders(ratatui::widgets::Borders::ALL);
+            .borders(ratatui::widgets::Borders::ALL)
+            .padding(Padding::new(1, 0, 0, 0));
 
         let mut line_idx = 0;
         // start,end line idxs for each code block
@@ -429,7 +433,14 @@ impl Widget for &mut ChatHistoryWidget {
                                             .fg(ratatui::style::Color::Yellow),
                                     )]
                                 } else {
-                                    code.lines.clone()
+                                    code.lines
+                                        .iter()
+                                        .map(|line| {
+                                            let mut indented = line.clone();
+                                            indented.spans.insert(0, "│ ".into());
+                                            indented
+                                        })
+                                        .collect()
                                 };
                                 code_block_hitboxes
                                     .push((line_idx, line_idx + code_block_lines.len()));
@@ -633,7 +644,9 @@ impl App {
                     }
                     api::ws::Message::ResponseState(state) => match state {
                         api::ws::ResponseState::Parallel => {
-                            // TODO: thinking...
+                            let mut scrollback = scrollback.lock().unwrap();
+                            let last = scrollback.last_mut().unwrap();
+                            last.blocks.push(MessageBlock::new_text("Thinking..."));
                         }
                         api::ws::ResponseState::Failed => {}
                     },
@@ -802,6 +815,12 @@ impl App {
                         _ => {}
                     },
                     Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
+                        KeyCode::Char('d')
+                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                        {
+                            let mut state = self.state.lock().unwrap();
+                            *state = AppState::Exit;
+                        }
                         KeyCode::Char('w')
                             if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
                         {
@@ -1002,6 +1021,14 @@ fn ui(
     input: &str,
     input_cursor: usize,
 ) {
+    let _ = match &*state.lock().unwrap() {
+        AppState::Chat => {
+            ratatui::crossterm::execute!(std::io::stdout(), SetCursorStyle::BlinkingBlock)
+        }
+        _ => {
+            ratatui::crossterm::execute!(std::io::stdout(), SetCursorStyle::SteadyBlock)
+        }
+    };
     let vertical = ratatui::layout::Layout::vertical([
         ratatui::layout::Constraint::Percentage(100),
         ratatui::layout::Constraint::Min(3),
@@ -1022,9 +1049,9 @@ fn ui(
             frame.render_widget(diff_widget, frame.size());
         }
         AppState::Help => {
-            let help_text = r#"/exit or /quit: Exit the chat
-/help: Show this help
-/docs: Open the Bismuth documentation"#;
+            let help_text = r#"/exit, /quit, or Esc: Exit the chat
+/docs: Open the Bismuth documentation
+/help: Show this help"#;
             let paragraph = Paragraph::new(help_text)
                 .block(Block::bordered().title("Help (press any key to close)"));
             let area = centered_paragraph(&paragraph, frame.size());
@@ -1061,7 +1088,6 @@ mod terminal {
     use ratatui::{
         backend::CrosstermBackend,
         crossterm::{
-            cursor::SetCursorStyle,
             event::{
                 DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
             },
@@ -1083,7 +1109,6 @@ mod terminal {
             EnterAlternateScreen,
             EnableMouseCapture,
             EnableFocusChange,
-            SetCursorStyle::BlinkingBlock,
         )?;
         let backend = CrosstermBackend::new(io::stdout());
         Terminal::new(backend)
