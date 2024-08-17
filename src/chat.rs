@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{anyhow, Result};
@@ -300,6 +300,7 @@ impl CodeBlock {
 #[derive(Clone, Debug)]
 enum MessageBlock {
     Text(Vec<Line<'static>>),
+    Thinking,
     Code(CodeBlock),
 }
 
@@ -419,6 +420,17 @@ impl Widget for &mut ChatHistoryWidget {
                     .flat_map(|block| {
                         let mut lines = match block {
                             MessageBlock::Text(lines) => lines.clone(),
+                            MessageBlock::Thinking => {
+                                vec![Line::raw(format!(
+                                    "Thinking {}",
+                                    vec!['|', '\\', '-', '/'][SystemTime::now()
+                                        .duration_since(UNIX_EPOCH)
+                                        .unwrap()
+                                        .subsec_millis()
+                                        as usize
+                                        / 251]
+                                ))]
+                            }
                             MessageBlock::Code(code) => {
                                 let code_block_lines = if code.folded {
                                     vec![Line::styled(
@@ -468,7 +480,12 @@ impl Widget for &mut ChatHistoryWidget {
         // -2 to account for the borders
         // +3 so you can scroll past the bottom a bit to see this is really the end
         let nlines = paragraph.line_count(area.width - 2) + 3;
+        let old_scroll_max = self.scroll_max;
         self.scroll_max = nlines.max(area.height as usize) - (area.height as usize);
+        // Auto scroll to the bottom if we were already at the bottom
+        if self.scroll_position == old_scroll_max {
+            self.scroll_position = self.scroll_max;
+        }
         self.scroll_state = self.scroll_state.content_length(self.scroll_max);
 
         self.code_block_hitboxes = code_block_hitboxes;
@@ -548,8 +565,10 @@ enum AppState {
 struct App {
     repo_path: PathBuf,
     user: api::User,
+
     /// Chat is always present in the background so this is not kept in the state
     chat_history: ChatHistoryWidget,
+
     /// Current chatbox input
     input: String,
     input_cursor: usize,
@@ -560,6 +579,7 @@ struct App {
         >,
     >,
     state: Arc<Mutex<AppState>>,
+    focus: bool,
 }
 
 impl App {
@@ -585,6 +605,7 @@ impl App {
             input_cursor: 0,
             ws_stream: Some(ws_stream),
             state: Arc::new(Mutex::new(AppState::Chat)),
+            focus: true,
         }
     }
 
@@ -646,7 +667,7 @@ impl App {
                         api::ws::ResponseState::Parallel => {
                             let mut scrollback = scrollback.lock().unwrap();
                             let last = scrollback.last_mut().unwrap();
-                            last.blocks.push(MessageBlock::new_text("Thinking..."));
+                            last.blocks.push(MessageBlock::Thinking);
                         }
                         api::ws::ResponseState::Failed => {}
                     },
@@ -667,6 +688,7 @@ impl App {
             terminal.draw(|frame| {
                 ui(
                     frame,
+                    self.focus,
                     self.state.clone(),
                     &mut self.chat_history,
                     &self.input,
@@ -766,8 +788,12 @@ impl App {
                     }
                 }
                 AppState::Chat => match event::read()? {
-                    Event::FocusGained => {}
-                    Event::FocusLost => {}
+                    Event::FocusGained => {
+                        self.focus = true;
+                    }
+                    Event::FocusLost => {
+                        self.focus = false;
+                    }
                     Event::Mouse(mouse) => match mouse.kind {
                         event::MouseEventKind::ScrollUp => {
                             self.chat_history.scroll_position =
@@ -1016,6 +1042,7 @@ pub async fn start_chat(
 
 fn ui(
     frame: &mut ratatui::Frame,
+    focus: bool,
     state: Arc<Mutex<AppState>>,
     chat_history: &mut ChatHistoryWidget,
     input: &str,
@@ -1029,6 +1056,18 @@ fn ui(
             ratatui::crossterm::execute!(std::io::stdout(), SetCursorStyle::SteadyBlock)
         }
     };
+
+    /*
+    // Make background black when not focused
+    // This feels like a bit too much though
+    let background = Block::default().bg(if focus {
+        ratatui::style::Color::Reset
+    } else {
+        ratatui::style::Color::Black
+    });
+    frame.render_widget(background, frame.size());
+    */
+
     let vertical = ratatui::layout::Layout::vertical([
         ratatui::layout::Constraint::Percentage(100),
         ratatui::layout::Constraint::Min(3),
