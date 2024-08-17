@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use api::CreateProjectRepo;
 use clap::Parser as _;
 use colored::Colorize;
 use futures::{StreamExt as _, TryStreamExt};
@@ -571,7 +572,9 @@ async fn main() -> Result<()> {
                 cli::ProjectCommand::Create { name } => {
                     client
                         .post("/projects")
-                        .json(&api::CreateProjectRequest::Name(name.clone()))
+                        .json(&api::CreateProjectRequest::Name(api::CreateProjectRepo {
+                            name: name.clone(),
+                        }))
                         .send()
                         .await?
                         .error_body_for_status()
@@ -590,9 +593,9 @@ async fn main() -> Result<()> {
                         }
                         let project: api::Project = client
                             .post("/projects")
-                            .json(&api::CreateProjectRequest::Name(
-                                repo.file_name().unwrap().to_string_lossy().to_string(),
-                            ))
+                            .json(&api::CreateProjectRequest::Name(api::CreateProjectRepo {
+                                name: repo.file_name().unwrap().to_string_lossy().to_string(),
+                            }))
                             .send()
                             .await?
                             .error_body_for_status()

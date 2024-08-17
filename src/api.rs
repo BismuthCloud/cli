@@ -33,10 +33,15 @@ pub struct Project {
     pub github_app_install: Option<GitHubAppInstall>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CreateProjectRepo {
+    pub name: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub enum CreateProjectRequest {
-    Name(String),
+    Name(CreateProjectRepo),
     Repo(GitHubRepo),
 }
 
