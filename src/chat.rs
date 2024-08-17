@@ -74,10 +74,8 @@ fn list_changed_files(repo_path: &Path) -> Result<Vec<PathBuf>> {
         .target()
         .unwrap();
     let upstream_tree = repo.find_commit(upstream_commit)?.tree()?;
-    let diff = repo.diff_tree_to_workdir(
-        Some(&upstream_tree),
-        Some(DiffOptions::new().context_lines(3)),
-    )?;
+    // TODO: tree to workdir (w/out index) doesn't work..
+    let diff = repo.diff_tree_to_workdir_with_index(Some(&upstream_tree), None)?;
     let mut changed_files = vec![];
     diff.foreach(
         &mut |delta, _| {
@@ -956,7 +954,8 @@ impl App {
         let modified_files = list_changed_files(&self.repo_path)?
             .into_iter()
             .map(|path| {
-                let content = std::fs::read_to_string(&self.repo_path.join(&path)).unwrap();
+                let content =
+                    std::fs::read_to_string(&self.repo_path.join(&path)).unwrap_or("".to_string());
                 api::ws::ChatModifiedFile {
                     name: path.file_name().unwrap().to_str().unwrap().to_string(),
                     project_path: path.to_str().unwrap().to_string(),
