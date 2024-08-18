@@ -119,6 +119,9 @@ pub enum Command {
         #[clap(subcommand)]
         command: SQLCommand,
     },
+    /// Create a new Bismuth project, and import an existing Git repository into it.
+    /// Alias of `project import`.
+    Import(ImportSource),
     /// Deploy a feature to the cloud. Alias of `feature deploy`.
     Deploy {
         #[clap(flatten)]
@@ -164,7 +167,6 @@ pub enum Command {
 #[group(required = true, multiple = false)]
 pub struct ImportSource {
     /// The path to the Git repository to import. Defaults to the current directory.
-    #[arg(long)]
     pub repo: Option<PathBuf>,
 
     /// Import a repository from GitHub.

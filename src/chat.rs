@@ -3,12 +3,11 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{anyhow, Result};
 use futures::{stream::SplitSink, SinkExt, StreamExt, TryStreamExt};
-use git2::DiffOptions;
 use log::{debug, trace};
 use ratatui::{
     crossterm::{
@@ -244,7 +243,6 @@ enum ChatMessageUser {
 #[derive(Clone, Debug)]
 struct CodeBlock {
     language: String,
-    raw_code: String,
     /// The syntax highlighted code
     // TODO: threading <'a> through the whole struct is a complete PITA
     // so just leak stuff for now. It's not really wrong either since these
@@ -290,7 +288,6 @@ impl CodeBlock {
 
         Self {
             language: language.unwrap_or("").to_string(),
-            raw_code: raw_code.to_string(),
             lines,
             folded: true,
         }

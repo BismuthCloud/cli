@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use api::CreateProjectRepo;
 use clap::Parser as _;
 use colored::Colorize;
 use futures::{StreamExt as _, TryStreamExt};
@@ -232,6 +231,102 @@ async fn get_project_and_feature_for_repo(
     ));
 }
 
+async fn project_import(
+    source: &cli::ImportSource,
+    api_url: &Url,
+    client: &APIClient,
+) -> Result<()> {
+    if !source.github {
+        let repo = source.repo.clone().unwrap_or_else(|| PathBuf::from("."));
+        if !repo.exists() {
+            return Err(anyhow!("Repo does not exist"));
+        }
+        let repo = std::fs::canonicalize(repo)?;
+        if !repo.join(".git").is_dir() {
+            return Err(anyhow!("Directory is not a git repository"));
+        }
+        let project: api::Project = client
+            .post("/projects")
+            .json(&api::CreateProjectRequest::Name(api::CreateProjectRepo {
+                name: repo.file_name().unwrap().to_string_lossy().to_string(),
+            }))
+            .send()
+            .await?
+            .error_body_for_status()
+            .await?
+            .json()
+            .await?;
+        let mut git_url = api_url.clone().join(&format!("/git/{}", project.hash))?;
+        git_url.set_password(Some(&project.clone_token)).unwrap();
+
+        let git_repo = git2::Repository::open(repo.as_path())?;
+        match git_repo.find_remote("bismuth") {
+            Ok(_) => {
+                debug!("Updating existing bismuth remote URL");
+                git_repo.remote_set_url("bismuth", &git_url.to_string())?;
+            }
+            Err(_) => {
+                debug!("Adding new bismuth remote");
+                git_repo.remote("bismuth", &git_url.to_string())?;
+            }
+        }
+        let branch_name = git_repo.head()?.shorthand().unwrap().to_string();
+
+        Command::new("git")
+            .arg("-C")
+            .arg(repo.as_path())
+            .arg("push")
+            .arg("--force")
+            .arg("bismuth")
+            .arg("--all")
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .output()
+            .map_err(|e| anyhow!(e))
+            .and_then(|o| {
+                if o.status.success() {
+                    Ok(())
+                } else {
+                    Err(anyhow!("Failed to push to Bismuth"))
+                }
+            })?;
+        println!(
+            "Successfully imported {} to project {}!",
+            repo.canonicalize()?.as_path().display(),
+            project.name
+        );
+        println!("You can now push to Bismuth with `git push bismuth` in this repository.");
+        println!(
+                    "You can also deploy this project with `bismuth deploy '{}/{}'` after creating an entrypoint.",
+                    project.name, branch_name
+                );
+        Ok(())
+    } else {
+        let repos = client
+            .get("/projects/connect/github/repo")
+            .send()
+            .await?
+            .error_body_for_status()
+            .await?
+            .json::<Vec<api::GitHubRepo>>()
+            .await?;
+        if repos.is_empty() {
+            println!("You'll need to install the GitHub app first.");
+            print!("Go to {} to install it.", github_app_url(&client.base_url));
+            return Ok(());
+        }
+        let repo = choice(&repos, "repository").await?;
+        client
+            .post("/projects")
+            .json(&api::CreateProjectRequest::Repo(repo.clone()))
+            .send()
+            .await?
+            .error_body_for_status()
+            .await?;
+        Ok(())
+    }
+}
+
 fn project_clone(project: &api::Project, api_url: &Url, outdir: Option<&Path>) -> Result<PathBuf> {
     let mut auth_url = api_url.clone();
     auth_url.set_password(Some(&project.clone_token)).unwrap();
@@ -277,11 +372,77 @@ fn project_clone(project: &api::Project, api_url: &Url, outdir: Option<&Path>) -
     Ok(outdir)
 }
 
+/// Returns true if the specified repository has changes that have not been pushed to the Bismuth remote.
+fn check_not_pushed(repo: &Path, project: &api::Project, feature: &api::Feature) -> Result<bool> {
+    let repo = git2::Repository::open(repo)?;
+    let remote_url = repo.find_remote("bismuth")?.url().unwrap().to_string();
+    let branch_name = repo.head()?.shorthand().unwrap().to_string();
+
+    if !remote_url.contains(&project.clone_token) {
+        return Err(anyhow!("Repository does not correspond to project"));
+    }
+
+    if branch_name != feature.name {
+        return Err(anyhow!("Current branch does not match feature name"));
+    }
+
+    let origin_commit = repo
+        .find_branch(
+            &format!("origin/{}", &branch_name),
+            git2::BranchType::Remote,
+        )?
+        .get()
+        .target()
+        .ok_or(anyhow!("No branch in origin?"))?;
+    let bismuth_commit = repo
+        .find_branch(
+            &format!("bismuth/{}", &branch_name),
+            git2::BranchType::Remote,
+        )?
+        .get()
+        .target()
+        .ok_or(anyhow!("No branch in bismuth?"))?;
+
+    return Ok(origin_commit != bismuth_commit);
+}
+
 async fn feature_deploy(
     project: &api::Project,
     feature: &api::Feature,
     client: &APIClient,
 ) -> Result<()> {
+    if let Ok(true) = check_not_pushed(&std::env::current_dir()?, project, feature) {
+        println!(
+            "{}",
+            "Repository has commits not pushed to Bismuth - you may be deploying an old version."
+                .yellow()
+        );
+        print!("Would you like to push changes now? [Y/n] ");
+        std::io::stdout().flush()?;
+        let confirm = tokio::io::BufReader::new(tokio::io::stdin())
+            .lines()
+            .next_line()
+            .await?
+            .unwrap_or("n".to_string());
+        if confirm.trim().to_lowercase() == "y" {
+            Command::new("git")
+                .arg("push")
+                .arg("--force")
+                .arg("bismuth")
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .output()
+                .map_err(|e| anyhow!(e))
+                .and_then(|o| {
+                    if o.status.success() {
+                        Ok(())
+                    } else {
+                        Err(anyhow!("Failed to push to Bismuth"))
+                    }
+                })?;
+        }
+    }
+
     client
         .post(&format!(
             "/projects/{}/features/{}/deploy",
@@ -359,22 +520,40 @@ async fn feature_logs(
     follow: bool,
     client: &APIClient,
 ) -> Result<()> {
-    let mut es = EventSource::new(client.get(&format!(
-        "/projects/{}/features/{}/logs",
-        project.id, feature.id
-    )))?;
+    if follow {
+        let mut es = EventSource::new(client.get(&format!(
+            "/projects/{}/features/{}/logs/streaming",
+            project.id, feature.id
+        )))?;
 
-    while let Some(event) = es.next().await {
-        match event {
-            Ok(reqwest_eventsource::Event::Open) => {}
-            Ok(reqwest_eventsource::Event::Message(message)) => print!("{}", message.data),
-            Err(err) => {
-                eprintln!("Error streaming logs: {}", err);
-                es.close();
+        while let Some(event) = es.next().await {
+            match event {
+                Ok(reqwest_eventsource::Event::Open) => {}
+                Ok(reqwest_eventsource::Event::Message(message)) => print!("{}", message.data),
+                Err(err) => {
+                    eprintln!("Error streaming logs: {}", err);
+                    es.close();
+                }
             }
         }
+
+        Ok(())
+    } else {
+        let logs = client
+            .get(&format!(
+                "/projects/{}/features/{}/logs",
+                project.id, feature.id
+            ))
+            .send()
+            .await?
+            .error_body_for_status()
+            .await?
+            .text()
+            .await?;
+        println!("{}", logs);
+
+        Ok(())
     }
-    Ok(())
 }
 
 fn oidc_url(api_url: &Url) -> Url {
@@ -400,8 +579,8 @@ async fn oidc_server(api_url: &Url) -> Result<String> {
     let port = server.server_addr().to_ip().unwrap().port();
     println!(
         "Go to the following URL to authenticate: {}",
-        oidc_url(api_url)
-            .join(&format!("auth?client_id=cli&redirect_uri=http://localhost:{}/&scope=openid&response_type=code&response_mode=query&prompt=login", port))
+        api_url
+            .join(&format!("auth/cli?port={}", port))
             .unwrap()
             .to_string()
             .blue()
@@ -554,195 +733,97 @@ async fn main() -> Result<()> {
     )?;
 
     match &args.command {
-        cli::Command::Project { command } => {
-            match command {
-                cli::ProjectCommand::List => {
-                    let get_projects = client
-                        .get("/projects/list")
-                        .send()
-                        .await?
-                        .error_body_for_status()
-                        .await?;
-                    let projects: api::ListProjectsResponse = get_projects.json().await?;
-                    for project in &projects.projects {
-                        println!("{}", project.name);
-                    }
-                    Ok(())
+        cli::Command::Project { command } => match command {
+            cli::ProjectCommand::List => {
+                let get_projects = client
+                    .get("/projects/list")
+                    .send()
+                    .await?
+                    .error_body_for_status()
+                    .await?;
+                let projects: api::ListProjectsResponse = get_projects.json().await?;
+                for project in &projects.projects {
+                    println!("{}", project.name);
                 }
-                cli::ProjectCommand::Create { name } => {
-                    client
-                        .post("/projects")
-                        .json(&api::CreateProjectRequest::Name(api::CreateProjectRepo {
-                            name: name.clone(),
-                        }))
-                        .send()
-                        .await?
-                        .error_body_for_status()
-                        .await?;
-                    Ok(())
-                }
-                cli::ProjectCommand::Import(source) => {
-                    if !source.github {
-                        let repo = source.repo.clone().unwrap_or_else(|| PathBuf::from("."));
-                        if !repo.exists() {
-                            return Err(anyhow!("Repo does not exist"));
-                        }
-                        let repo = std::fs::canonicalize(repo)?;
-                        if !repo.join(".git").is_dir() {
-                            return Err(anyhow!("Directory is not a git repository"));
-                        }
-                        let project: api::Project = client
-                            .post("/projects")
-                            .json(&api::CreateProjectRequest::Name(api::CreateProjectRepo {
-                                name: repo.file_name().unwrap().to_string_lossy().to_string(),
-                            }))
-                            .send()
-                            .await?
-                            .error_body_for_status()
-                            .await?
-                            .json()
-                            .await?;
-                        let mut git_url = args
-                            .global
-                            .api_url
-                            .clone()
-                            .join(&format!("/git/{}", project.hash))?;
-                        git_url.set_password(Some(&project.clone_token)).unwrap();
-                        // TODO: convert to git2
-                        Command::new("git")
-                            .arg("-C")
-                            .arg(repo.as_path())
-                            .arg("remote")
-                            .arg("add")
-                            .arg("bismuth")
-                            .arg(git_url.to_string())
-                            .output()
-                            .map_err(|e| anyhow!(e))
-                            .and_then(|o| {
-                                if o.status.success() {
-                                    Ok(())
-                                } else {
-                                    Err(anyhow!("Failed to add bismuth remote"))
-                                }
-                            })?;
-                        Command::new("git")
-                            .arg("-C")
-                            .arg(repo.as_path())
-                            .arg("push")
-                            .arg("--force")
-                            .arg("--set-upstream")
-                            .arg("bismuth")
-                            .arg("--all")
-                            .stdout(std::process::Stdio::inherit())
-                            .stderr(std::process::Stdio::inherit())
-                            .output()
-                            .map_err(|e| anyhow!(e))
-                            .and_then(|o| {
-                                if o.status.success() {
-                                    Ok(())
-                                } else {
-                                    Err(anyhow!("Failed to push to Bismuth"))
-                                }
-                            })?;
-                        println!(
-                            "Successfully imported {} to project {}!",
-                            repo.canonicalize()?.as_path().display(),
-                            project.name
-                        );
-                        println!("You can now push to Bismuth with `git push bismuth` in this repository.");
-                        println!(
-                    "You can also deploy this project with `bismuth deploy {}/main` after creating an entrypoint.",
-                    project.id
-                );
-                        Ok(())
-                    } else {
-                        let repos = client
-                            .get("/projects/connect/github/repo")
-                            .send()
-                            .await?
-                            .error_body_for_status()
-                            .await?
-                            .json::<Vec<api::GitHubRepo>>()
-                            .await?;
-                        if repos.is_empty() {
-                            println!("You'll need to install the GitHub app first.");
-                            print!("Go to {} to install it.", github_app_url(&client.base_url));
-                            return Ok(());
-                        }
-                        let repo = choice(&repos, "repository").await?;
-                        client
-                            .post("/projects")
-                            .json(&api::CreateProjectRequest::Repo(repo.clone()))
-                            .send()
-                            .await?
-                            .error_body_for_status()
-                            .await?;
-                        Ok(())
-                    }
-                }
-                cli::ProjectCommand::Clone { project, outdir } => {
-                    let project = resolve_project_id(&client, project).await?;
-                    project_clone(&project, &args.global.api_url, outdir.as_deref())?;
-                    Ok(())
-                }
-                cli::ProjectCommand::Link { project } => {
-                    let project = resolve_project_id(&client, project).await?;
-                    let gh_orgs: Vec<api::GitHubAppInstall> = client
-                        .get("/projects/connect/github/organizations")
-                        .send()
-                        .await?
-                        .error_body_for_status()
-                        .await?
-                        .json()
-                        .await?;
-                    if gh_orgs.is_empty() {
-                        println!("You'll need to install the GitHub app first.");
-                        print!("Go to {} to install it.", github_app_url(&client.base_url));
-                        return Ok(());
-                    }
-                    let gh_org = choice(&gh_orgs, "organization").await?;
-                    let updated_project: api::Project = client
-                        .post(&format!("/projects/{}/connect/github", project.id))
-                        .json(&gh_org)
-                        .send()
-                        .await?
-                        .error_body_for_status()
-                        .await?
-                        .json()
-                        .await?;
-                    println!(
-                        "Successfully linked {} to https://github.com/{}",
-                        updated_project.name,
-                        updated_project.github_repo.unwrap(),
-                    );
-                    Ok(())
-                }
-                cli::ProjectCommand::Delete { project } => {
-                    let project = resolve_project_id(&client, project).await?;
-                    print!(
-                        "Are you sure you want to delete project {}? [y/N] ",
-                        project.name
-                    );
-                    std::io::stdout().flush()?;
-
-                    let confirm = tokio::io::BufReader::new(tokio::io::stdin())
-                        .lines()
-                        .next_line()
-                        .await?
-                        .unwrap_or("n".to_string());
-                    if confirm.trim().to_lowercase() != "y" {
-                        return Ok(());
-                    }
-                    client
-                        .delete(&format!("/projects/{}", project.id))
-                        .send()
-                        .await?
-                        .error_body_for_status()
-                        .await?;
-                    Ok(())
-                }
+                Ok(())
             }
-        }
+            cli::ProjectCommand::Create { name } => {
+                client
+                    .post("/projects")
+                    .json(&api::CreateProjectRequest::Name(api::CreateProjectRepo {
+                        name: name.clone(),
+                    }))
+                    .send()
+                    .await?
+                    .error_body_for_status()
+                    .await?;
+                Ok(())
+            }
+            cli::ProjectCommand::Import(source) => {
+                project_import(source, &args.global.api_url, &client).await
+            }
+            cli::ProjectCommand::Clone { project, outdir } => {
+                let project = resolve_project_id(&client, project).await?;
+                project_clone(&project, &args.global.api_url, outdir.as_deref())?;
+                Ok(())
+            }
+            cli::ProjectCommand::Link { project } => {
+                let project = resolve_project_id(&client, project).await?;
+                let gh_orgs: Vec<api::GitHubAppInstall> = client
+                    .get("/projects/connect/github/organizations")
+                    .send()
+                    .await?
+                    .error_body_for_status()
+                    .await?
+                    .json()
+                    .await?;
+                if gh_orgs.is_empty() {
+                    println!("You'll need to install the GitHub app first.");
+                    print!("Go to {} to install it.", github_app_url(&client.base_url));
+                    return Ok(());
+                }
+                let gh_org = choice(&gh_orgs, "organization").await?;
+                let updated_project: api::Project = client
+                    .post(&format!("/projects/{}/connect/github", project.id))
+                    .json(&gh_org)
+                    .send()
+                    .await?
+                    .error_body_for_status()
+                    .await?
+                    .json()
+                    .await?;
+                println!(
+                    "Successfully linked {} to https://github.com/{}",
+                    updated_project.name,
+                    updated_project.github_repo.unwrap(),
+                );
+                Ok(())
+            }
+            cli::ProjectCommand::Delete { project } => {
+                let project = resolve_project_id(&client, project).await?;
+                print!(
+                    "Are you sure you want to delete project {}? [y/N] ",
+                    project.name
+                );
+                std::io::stdout().flush()?;
+
+                let confirm = tokio::io::BufReader::new(tokio::io::stdin())
+                    .lines()
+                    .next_line()
+                    .await?
+                    .unwrap_or("n".to_string());
+                if confirm.trim().to_lowercase() != "y" {
+                    return Ok(());
+                }
+                client
+                    .delete(&format!("/projects/{}", project.id))
+                    .send()
+                    .await?
+                    .error_body_for_status()
+                    .await?;
+                Ok(())
+            }
+        },
         cli::Command::Feature { command } => match command {
             cli::FeatureCommand::List { project } => {
                 let project = resolve_project_id(&client, project).await?;
@@ -1058,6 +1139,7 @@ async fn main() -> Result<()> {
             }
         },
         // Convenience aliases
+        cli::Command::Import(source) => project_import(source, &args.global.api_url, &client).await,
         cli::Command::Deploy { feature } => {
             let (project_name, feature_name) = feature.split();
             let project = resolve_project_id(&client, &project_name).await?;
