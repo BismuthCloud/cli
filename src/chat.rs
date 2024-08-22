@@ -30,9 +30,7 @@ use crate::{api, APIClient, ResponseErrorExt as _};
 fn websocket_url(api_url: &Url) -> &'static str {
     match api_url.host_str() {
         Some("localhost") => "ws://localhost:8765",
-        Some("api-staging.bismuth.cloud") => {
-            "wss://chat-staging.bismuth.cloud"
-        }
+        Some("api-staging.bismuth.cloud") => "wss://chat-staging.bismuth.cloud",
         _ => "wss://chat.bismuth.cloud",
     }
 }
@@ -632,6 +630,10 @@ impl App {
                     }
                     Ok(Some(message)) => message,
                 };
+                if let Message::Ping(_) = message {
+                    // todo: split/clone write so we can get a copy of it here and directly send a pong
+                    continue;
+                }
                 let scrollback = scrollback.clone();
                 let data: api::ws::Message =
                     serde_json::from_str(&message.into_text().unwrap()).unwrap();
@@ -1019,9 +1021,7 @@ pub async fn start_chat(
         .collect();
 
     let url = websocket_url(&client.base_url);
-    let (mut ws_stream, _) = connect_async(url)
-        .await
-        .expect("Failed to connect");
+    let (mut ws_stream, _) = connect_async(url).await.expect("Failed to connect");
 
     ws_stream
         .send(Message::Text(
