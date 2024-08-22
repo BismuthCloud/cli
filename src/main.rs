@@ -372,9 +372,15 @@ fn project_clone(project: &api::Project, api_url: &Url, outdir: Option<&Path>) -
     Ok(outdir)
 }
 
-/// Returns true if the specified repository has changes that have not been pushed to the Bismuth remote.
+/// Returns true if the specified repository has changes in the checked out branch
+/// that have not been pushed to a Bismuth remote.
 fn check_not_pushed(repo: &Path, project: &api::Project, feature: &api::Feature) -> Result<bool> {
     let repo = git2::Repository::open(repo)?;
+    let origin_url = repo.find_remote("origin")?.url().unwrap().to_string();
+    if origin_url.contains(&project.clone_token) {
+        return Ok(false);
+    }
+
     let remote_url = repo.find_remote("bismuth")?.url().unwrap().to_string();
     let branch_name = repo.head()?.shorthand().unwrap().to_string();
 

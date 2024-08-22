@@ -23,8 +23,19 @@ use syntect::easy::HighlightLines;
 use syntect::util::LinesWithEndings;
 use syntect_tui::into_span;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use url::Url;
 
 use crate::{api, APIClient, ResponseErrorExt as _};
+
+fn websocket_url(api_url: &Url) -> &'static str {
+    match api_url.host_str() {
+        Some("localhost") => "ws://localhost:8765",
+        Some("api-staging.bismuth.cloud") => {
+            "wss://chat-staging.bismuth.cloud"
+        }
+        _ => "wss://chat.bismuth.cloud",
+    }
+}
 
 /// Extract files denoted with the BISMUTH FILE comment from a code block.
 fn extract_bismuth_files_from_code_block(data: &str) -> HashMap<String, String> {
@@ -1007,11 +1018,8 @@ pub async fn start_chat(
         .map(Into::into)
         .collect();
 
-    let mut url = client.base_url.clone();
-    url.set_password(None).unwrap();
-    url.set_scheme(&url.scheme().replace("http", "ws")).unwrap();
-    url = url.join("/chat/streaming")?;
-    let (mut ws_stream, _) = connect_async(url.as_str())
+    let url = websocket_url(&client.base_url);
+    let (mut ws_stream, _) = connect_async(url)
         .await
         .expect("Failed to connect");
 
