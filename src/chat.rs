@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
@@ -80,19 +80,30 @@ fn list_changed_files(repo_path: &Path) -> Result<Vec<PathBuf>> {
         .target()
         .unwrap();
     let upstream_tree = repo.find_commit(upstream_commit)?.tree()?;
-    // TODO: tree to workdir (w/out index) doesn't work..
+    // Diff tree to index
     let diff = repo.diff_tree_to_workdir_with_index(Some(&upstream_tree), None)?;
-    let mut changed_files = vec![];
+    let mut changed_files = HashSet::new();
     diff.foreach(
         &mut |delta, _| {
-            changed_files.push(delta.new_file().path().unwrap().to_path_buf());
+            changed_files.insert(delta.new_file().path().unwrap().to_path_buf());
             true
         },
         None,
         None,
         None,
     )?;
-    Ok(changed_files)
+    // Then diff index to workdir
+    let diff = repo.diff_index_to_workdir(None, None)?;
+    diff.foreach(
+        &mut |delta, _| {
+            changed_files.insert(delta.new_file().path().unwrap().to_path_buf());
+            true
+        },
+        None,
+        None,
+        None,
+    )?;
+    Ok(changed_files.into_iter().collect())
 }
 
 fn process_chat_message(repo_path: &Path, message: &str) -> Result<Option<String>> {
@@ -115,6 +126,23 @@ fn process_chat_message(repo_path: &Path, message: &str) -> Result<Option<String
         return Ok(None);
     }
 
+    let mut index = repo.index()?;
+    index.add_all(&["*"], git2::IndexAddOption::DEFAULT, None)?;
+    index.write()?;
+    let tree_id = index.write_tree()?;
+    let tree = repo.find_tree(tree_id)?;
+    let head = repo.head()?;
+    let parent_commit = repo.find_commit(head.target().unwrap())?;
+    let signature = git2::Signature::now("Bismuth-Temp", "committer@app.bismuth.cloud")?;
+    repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        "Bismuth Temp Commit",
+        &tree,
+        &[&parent_commit],
+    )?;
+
     let mut positions = vec![];
 
     // TODO: do we return a diff for each code block?
@@ -136,7 +164,6 @@ fn process_chat_message(repo_path: &Path, message: &str) -> Result<Option<String
         positions.push(md_code_block.position.clone().unwrap());
     }
 
-    let mut index = repo.index()?;
     index.add_all(&["*"], git2::IndexAddOption::DEFAULT, None)?;
     index.write()?;
 
@@ -161,8 +188,26 @@ fn process_chat_message(repo_path: &Path, message: &str) -> Result<Option<String
 }
 
 fn commit(repo_path: &Path) -> Result<()> {
+    Command::new("git")
+        .arg("-C")
+        .arg(&repo_path)
+        .arg("reset")
+        .arg("HEAD~1")
+        .output()
+        .map_err(|e| anyhow!("Failed to run git reset: {}", e))
+        .and_then(|o| {
+            if o.status.success() {
+                Ok(o.stdout)
+            } else {
+                Err(anyhow!("git reset failed (code={})", o.status))
+            }
+        })
+        .and_then(|s| String::from_utf8(s).map_err(|e| anyhow!(e)))?;
+
     let repo = git2::Repository::open(&repo_path)?;
     let mut index = repo.index()?;
+    index.add_all(&["*"], git2::IndexAddOption::DEFAULT, None)?;
+    index.write()?;
     let tree_id = index.write_tree()?;
     let tree = repo.find_tree(tree_id)?;
 
@@ -205,6 +250,7 @@ fn commit(repo_path: &Path) -> Result<()> {
 
 fn revert(repo_path: &Path) -> Result<()> {
     let repo = git2::Repository::open(&repo_path)?;
+
     let mut index = repo.index()?;
     index.remove_all(&["*"], None)?;
     index.write()?;
@@ -237,6 +283,21 @@ fn revert(repo_path: &Path) -> Result<()> {
                 Ok(())
             } else {
                 Err(anyhow!("git clean failed (code={})", o.status))
+            }
+        })?;
+
+    Command::new("git")
+        .arg("-C")
+        .arg(&repo_path)
+        .arg("reset")
+        .arg("HEAD~1")
+        .output()
+        .map_err(|e| anyhow!("Failed to run git reset: {}", e))
+        .and_then(|o| {
+            if o.status.success() {
+                Ok(())
+            } else {
+                Err(anyhow!("git reset failed (code={})", o.status))
             }
         })?;
 
