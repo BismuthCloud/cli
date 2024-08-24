@@ -28,6 +28,7 @@ struct Config {
     token: String,
 }
 
+#[derive(Clone)]
 struct APIClient {
     client: reqwest::Client,
     pub base_url: Url,
@@ -1246,39 +1247,7 @@ async fn main() -> Result<()> {
                         Err(anyhow!("Failed to fetch ({})", o.status))
                     }
                 })?;
-            /*
-            let git_repo = git2::Repository::open(&repo_path)?;
 
-            let worktree_base = Path::new("/tmp/bismuthWorktrees");
-            if !worktree_base.exists() {
-                tokio::fs::create_dir_all(worktree_base).await?;
-            }
-            let worktree_path = worktree_base.join(format!("{}-{}", project.id, feature.id));
-            if !worktree_path.exists() {
-                let worktree_branch = format!("{}-cli-chat", feature.name);
-                debug!("Creating new worktree");
-
-                if git_repo
-                    .find_branch(&worktree_branch, git2::BranchType::Local)
-                    .is_err()
-                {
-                    debug!("Creating new branch");
-                    git_repo.branch(
-                        &worktree_branch,
-                        &git_repo.head()?.peel_to_commit()?,
-                        false,
-                    )?;
-                }
-
-                git_repo.worktree(
-                    &worktree_branch,
-                    &worktree_path,
-                    Some(WorktreeAddOptions::new().reference(Some(
-                        &git_repo.resolve_reference_from_short_name(&worktree_branch)?,
-                    ))),
-                )?;
-            }
-            */
             start_chat(&current_user, &project, &feature, &repo_path, &client).await
         }
         cli::Command::Version => unreachable!(),

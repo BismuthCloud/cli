@@ -109,6 +109,13 @@ pub struct ChatMessage {
     pub content: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerationAcceptedRequest {
+    pub message_id: u64,
+    pub accepted: bool,
+}
+
 pub mod ws {
     use serde::{ser::SerializeStruct, Deserialize, Serialize};
 

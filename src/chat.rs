@@ -405,19 +405,7 @@ impl ChatMessage {
             None => vec![],
         };
 
-        let prefix_spans = vec![
-            match user {
-                ChatMessageUser::AI => ratatui::text::Span::styled(
-                    "Bismuth",
-                    ratatui::style::Style::default().fg(ratatui::style::Color::Magenta),
-                ),
-                ChatMessageUser::User(ref user) => ratatui::text::Span::styled(
-                    user.clone(),
-                    ratatui::style::Style::default().fg(ratatui::style::Color::Cyan),
-                ),
-            },
-            ": ".into(),
-        ];
+        let prefix_spans = Self::format_user(&user);
 
         if let Some(MessageBlock::Text(text_lines)) = blocks.first_mut() {
             text_lines[0].spans = prefix_spans
@@ -429,6 +417,22 @@ impl ChatMessage {
         }
 
         Self { user, blocks }
+    }
+
+    fn format_user<'a>(user: &ChatMessageUser) -> Vec<Span<'a>> {
+        vec![
+            match user {
+                ChatMessageUser::AI => ratatui::text::Span::styled(
+                    "Bismuth",
+                    ratatui::style::Style::default().fg(ratatui::style::Color::Magenta),
+                ),
+                ChatMessageUser::User(ref user) => ratatui::text::Span::styled(
+                    user.clone(),
+                    ratatui::style::Style::default().fg(ratatui::style::Color::Cyan),
+                ),
+            },
+            ": ".into(),
+        ]
     }
 }
 
@@ -597,7 +601,10 @@ impl Widget for &mut DiffReviewWidget {
             })
             .collect::<Vec<_>>();
         let paragraph = Paragraph::new(lines)
-            .block(Block::bordered().title("Review Diff (y to commit, n to revert)"))
+            .block(Block::bordered().title(vec![
+                "Review Diff ".into(),
+                Span::styled("(y to commit, n to revert)", ratatui::style::Color::Yellow),
+            ]))
             .scroll((self.scroll_position as u16, 0));
 
         let nlines = self.diff.lines().count();
@@ -635,11 +642,14 @@ struct App {
     input: String,
     input_cursor: usize,
 
+    client: APIClient,
     ws_stream: Option<
         tokio_tungstenite::WebSocketStream<
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
     >,
+    project: api::Project,
+    feature: api::Feature,
     state: Arc<Mutex<AppState>>,
     focus: bool,
 }
@@ -647,11 +657,14 @@ struct App {
 impl App {
     fn new(
         repo_path: &Path,
+        project: &api::Project,
+        feature: &api::Feature,
         current_user: &api::User,
         chat_history: &[ChatMessage],
         ws_stream: tokio_tungstenite::WebSocketStream<
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
+        client: &APIClient,
     ) -> Self {
         Self {
             repo_path: repo_path.to_path_buf(),
@@ -665,7 +678,10 @@ impl App {
             },
             input: String::new(),
             input_cursor: 0,
+            client: client.clone(),
             ws_stream: Some(ws_stream),
+            project: project.clone(),
+            feature: feature.clone(),
             state: Arc::new(Mutex::new(AppState::Chat)),
             focus: true,
         }
@@ -705,10 +721,30 @@ impl App {
                         match stuff {
                             api::ws::ChatMessageBody::StreamingToken { token, .. } => {
                                 let mut scrollback = scrollback.lock().unwrap();
-                                let last_block =
-                                    scrollback.last_mut().unwrap().blocks.last_mut().unwrap();
-                                if let MessageBlock::Text(lines) = last_block {
-                                    lines.last_mut().unwrap().spans.push(Span::raw(token.text));
+                                let last_msg = scrollback.last_mut().unwrap();
+                                let nblocks = last_msg.blocks.len();
+                                let last_block = last_msg.blocks.last_mut().unwrap();
+                                match last_block {
+                                    MessageBlock::Text(lines) => {
+                                        if lines.len() > 0 {
+                                            lines
+                                                .last_mut()
+                                                .unwrap()
+                                                .spans
+                                                .push(Span::raw(token.text));
+                                        } else {
+                                            lines.push(Line::from(vec![Span::raw(token.text)]));
+                                        }
+                                    }
+                                    MessageBlock::Thinking => {
+                                        if nblocks > 1 {
+                                            *last_block = MessageBlock::new_text(&token.text);
+                                        } else {
+                                            *last_msg =
+                                                ChatMessage::new(ChatMessageUser::AI, &token.text);
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             }
                             api::ws::ChatMessageBody::FinalizedMessage {
@@ -774,11 +810,38 @@ impl App {
                     Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
                         KeyCode::Char('y') => {
                             commit(&self.repo_path)?;
+                            // TODO: run in background?
+                            // self.client
+                            //     .post(&format!(
+                            //         "/projects/{}/features/{}/chat/accepted",
+                            //         self.project.id, self.feature.id
+                            //     ))
+                            //     .json(api::GenerationAcceptedRequest {
+                            //         message_id: message_id,
+                            //         accepted: true,
+                            //     })
+                            //     .send()
+                            //     .await?
+                            //     .error_body_for_status()
+                            //     .await?;
                             let mut state = self.state.lock().unwrap();
                             *state = AppState::Chat;
                         }
                         KeyCode::Char('n') | KeyCode::Esc => {
                             revert(&self.repo_path)?;
+                            // self.client
+                            //     .post(&format!(
+                            //         "/projects/{}/features/{}/chat/accepted",
+                            //         self.project.id, self.feature.id
+                            //     ))
+                            //     .json(api::GenerationAcceptedRequest {
+                            //         message_id: message_id,
+                            //         accepted: false,
+                            //     })
+                            //     .send()
+                            //     .await?
+                            //     .error_body_for_status()
+                            //     .await?;
                             let mut state = self.state.lock().unwrap();
                             *state = AppState::Chat;
                         }
@@ -1025,7 +1088,10 @@ impl App {
             ChatMessageUser::User(self.user.name.clone()),
             &self.input,
         ));
-        scrollback.push(ChatMessage::new(ChatMessageUser::AI, ""));
+        let mut ai_msg = ChatMessage::new(ChatMessageUser::AI, "");
+        ai_msg.blocks.clear();
+        ai_msg.blocks.push(MessageBlock::Thinking);
+        scrollback.push(ai_msg);
         let modified_files = list_changed_files(&self.repo_path)?
             .into_iter()
             .map(|path| {
@@ -1096,7 +1162,15 @@ pub async fn start_chat(
 
     debug!("Connected to chat");
 
-    let mut app = App::new(&repo_path, current_user, &scrollback, ws_stream);
+    let mut app = App::new(
+        &repo_path,
+        project,
+        feature,
+        current_user,
+        &scrollback,
+        ws_stream,
+        client,
+    );
 
     let status = app.run().await;
     terminal::restore();
