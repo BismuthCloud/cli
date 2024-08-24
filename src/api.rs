@@ -156,6 +156,11 @@ pub mod ws {
             clear_past_output: bool,
             id_at_analysis_open: Option<u64>,
         },
+        // The entirety of a message, but one that is still generating
+        // Used to send over prologue + code blocks for formatting in one go after parallel generation.
+        PartialMessage {
+            partial_message: String,
+        },
         FinalizedMessage {
             done: bool,
             generated_text: String,

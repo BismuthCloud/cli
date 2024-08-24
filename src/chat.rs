@@ -314,15 +314,13 @@ enum ChatMessageUser {
 struct CodeBlock {
     language: String,
     /// The syntax highlighted code
-    // TODO: threading <'a> through the whole struct is a complete PITA
-    // so just leak stuff for now. It's not really wrong either since these
-    // are actually live for the duration of the program.
     lines: Vec<Line<'static>>,
     folded: bool,
 }
 
 impl CodeBlock {
     fn new(language: Option<&str>, raw_code: &str) -> Self {
+        // TODO: BAAADDD
         let raw_code = Box::leak(raw_code.to_string().into_boxed_str());
 
         let ps = two_face::syntax::extra_newlines();
@@ -381,6 +379,7 @@ impl MessageBlock {
 #[derive(Clone, Debug)]
 struct ChatMessage {
     user: ChatMessageUser,
+    raw: String,
     blocks: Vec<MessageBlock>,
 }
 
@@ -390,15 +389,24 @@ impl ChatMessage {
         let mut blocks: Vec<_> = match root.children() {
             Some(nodes) => nodes
                 .into_iter()
-                .map(|block| match block {
+                .filter_map(|block| match block {
                     markdown::mdast::Node::Code(code) => {
-                        MessageBlock::Code(CodeBlock::new(code.lang.as_deref(), &code.value))
+                        if code.value.len() > 0 {
+                            Some(MessageBlock::Code(CodeBlock::new(
+                                code.lang.as_deref(),
+                                &code.value,
+                            )))
+                        } else {
+                            None
+                        }
                     }
                     _ => {
                         // Slice from content based on position instead of node.to_string()
                         // so that we get things like bullet points, list numbering, etc.
                         let position = block.position().unwrap();
-                        MessageBlock::new_text(&content[position.start.offset..position.end.offset])
+                        Some(MessageBlock::new_text(
+                            &content[position.start.offset..position.end.offset],
+                        ))
                     }
                 })
                 .collect(),
@@ -416,7 +424,11 @@ impl ChatMessage {
             blocks.insert(0, MessageBlock::Text(vec![Line::from(prefix_spans)]));
         }
 
-        Self { user, blocks }
+        Self {
+            user,
+            raw: content.to_string(),
+            blocks,
+        }
     }
 
     fn format_user<'a>(user: &ChatMessageUser) -> Vec<Span<'a>> {
@@ -722,30 +734,42 @@ impl App {
                             api::ws::ChatMessageBody::StreamingToken { token, .. } => {
                                 let mut scrollback = scrollback.lock().unwrap();
                                 let last_msg = scrollback.last_mut().unwrap();
-                                let nblocks = last_msg.blocks.len();
-                                let last_block = last_msg.blocks.last_mut().unwrap();
-                                match last_block {
-                                    MessageBlock::Text(lines) => {
-                                        if lines.len() > 0 {
-                                            lines
-                                                .last_mut()
-                                                .unwrap()
-                                                .spans
-                                                .push(Span::raw(token.text));
-                                        } else {
-                                            lines.push(Line::from(vec![Span::raw(token.text)]));
-                                        }
-                                    }
-                                    MessageBlock::Thinking => {
-                                        if nblocks > 1 {
-                                            *last_block = MessageBlock::new_text(&token.text);
-                                        } else {
-                                            *last_msg =
-                                                ChatMessage::new(ChatMessageUser::AI, &token.text);
-                                        }
-                                    }
-                                    _ => {}
-                                }
+                                let new_raw = last_msg.raw.clone() + &token.text;
+                                *last_msg = ChatMessage::new(last_msg.user.clone(), &new_raw);
+                                // let nblocks = last_msg.blocks.len();
+                                // let last_block = last_msg.blocks.last_mut().unwrap();
+                                // match last_block {
+                                //     MessageBlock::Text(lines) => {
+                                //         if lines.len() > 0 {
+                                //             lines
+                                //                 .last_mut()
+                                //                 .unwrap()
+                                //                 .spans
+                                //                 .push(Span::raw(token.text));
+                                //             // TODO: trim off ```python ?
+                                //         } else {
+                                //             lines.push(Line::from(vec![Span::raw(token.text)]));
+                                //         }
+                                //     }
+                                //     MessageBlock::Thinking => {
+                                //         if nblocks == 1 {
+                                //             // Replace the entire message so we get the Bismuth: prefix back
+                                //             *last_msg =
+                                //                 ChatMessage::new(ChatMessageUser::AI, &token.text);
+                                //         } else {
+                                //             // Otherwise just replace this thinking block
+                                //             *last_block = MessageBlock::new_text(&token.text);
+                                //         }
+                                //     }
+                                //     _ => {
+                                //         last_msg.blocks.push(MessageBlock::new_text(&token.text));
+                                //     }
+                                // }
+                            }
+                            api::ws::ChatMessageBody::PartialMessage { partial_message } => {
+                                let mut scrollback = scrollback.lock().unwrap();
+                                let last = scrollback.last_mut().unwrap();
+                                *last = ChatMessage::new(ChatMessageUser::AI, &partial_message);
                             }
                             api::ws::ChatMessageBody::FinalizedMessage {
                                 generated_text, ..
