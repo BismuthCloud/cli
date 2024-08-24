@@ -380,6 +380,7 @@ impl MessageBlock {
 struct ChatMessage {
     user: ChatMessageUser,
     raw: String,
+    finalized: bool,
     blocks: Vec<MessageBlock>,
 }
 
@@ -427,6 +428,7 @@ impl ChatMessage {
         Self {
             user,
             raw: content.to_string(),
+            finalized: false,
             blocks,
         }
     }
@@ -450,14 +452,16 @@ impl ChatMessage {
 
 impl From<api::ChatMessage> for ChatMessage {
     fn from(message: api::ChatMessage) -> Self {
-        ChatMessage::new(
+        let mut msg = ChatMessage::new(
             if message.is_ai {
                 ChatMessageUser::AI
             } else {
                 ChatMessageUser::User(message.user.as_ref().unwrap().name.clone())
             },
             &message.content,
-        )
+        );
+        msg.finalized = true;
+        msg
     }
 }
 
@@ -778,6 +782,7 @@ impl App {
                                     let mut scrollback = scrollback.lock().unwrap();
                                     let last = scrollback.last_mut().unwrap();
                                     *last = ChatMessage::new(ChatMessageUser::AI, &generated_text);
+                                    last.finalized = true;
                                 }
 
                                 if let Some(diff) =
@@ -1048,7 +1053,17 @@ impl App {
                             *state = AppState::Exit;
                         }
                         KeyCode::Enter => {
-                            self.handle_chat_input(&mut write).await?;
+                            let last_generation_done = {
+                                let scrollback = self.chat_history.messages.lock().unwrap();
+                                if let Some(last_msg) = scrollback.last() {
+                                    last_msg.finalized
+                                } else {
+                                    true
+                                }
+                            };
+                            if last_generation_done {
+                                self.handle_chat_input(&mut write).await?;
+                            }
                         }
                         _ => (),
                     },
@@ -1108,14 +1123,16 @@ impl App {
             return Ok(());
         }
         let mut scrollback = self.chat_history.messages.lock().unwrap();
-        scrollback.push(ChatMessage::new(
-            ChatMessageUser::User(self.user.name.clone()),
-            &self.input,
-        ));
+
+        let mut msg = ChatMessage::new(ChatMessageUser::User(self.user.name.clone()), &self.input);
+        msg.finalized = true;
+        scrollback.push(msg);
+
         let mut ai_msg = ChatMessage::new(ChatMessageUser::AI, "");
         ai_msg.blocks.clear();
         ai_msg.blocks.push(MessageBlock::Thinking);
         scrollback.push(ai_msg);
+
         let modified_files = list_changed_files(&self.repo_path)?
             .into_iter()
             .map(|path| {
