@@ -803,6 +803,11 @@ impl App {
                         api::ws::ResponseState::Parallel => {
                             let mut scrollback = scrollback.lock().unwrap();
                             let last = scrollback.last_mut().unwrap();
+                            // sorta hacky, but if the last block is code when we start thinking
+                            // remove it as it's a small partial message
+                            if let Some(MessageBlock::Code(_)) = last.blocks.last() {
+                                last.blocks.pop();
+                            }
                             last.blocks.push(MessageBlock::Thinking);
                         }
                         api::ws::ResponseState::Failed => {}
