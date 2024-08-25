@@ -727,6 +727,9 @@ impl App {
                     // todo: split/clone write so we can get a copy of it here and directly send a pong
                     continue;
                 }
+                if let Message::Close(_) = message {
+                    return;
+                }
                 let scrollback = scrollback.clone();
                 let data: api::ws::Message =
                     serde_json::from_str(&message.into_text().unwrap()).unwrap();
@@ -813,6 +816,7 @@ impl App {
         loop {
             let state = { self.state.lock().unwrap().clone() };
             if let AppState::Exit = state {
+                write.close().await?;
                 return Ok(());
             }
             if dead_rx.try_recv().is_ok() {
