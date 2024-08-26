@@ -164,6 +164,7 @@ pub mod ws {
         FinalizedMessage {
             done: bool,
             generated_text: String,
+            output_modified_files: Vec<ChatModifiedFile>,
             id: u64,
         },
     }

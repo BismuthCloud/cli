@@ -25,7 +25,10 @@ use syntect_tui::into_span;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use url::Url;
 
-use crate::{api, APIClient, ResponseErrorExt as _};
+use crate::{
+    api::{self, ws::ChatModifiedFile},
+    APIClient, ResponseErrorExt as _,
+};
 
 fn websocket_url(api_url: &Url) -> &'static str {
     match api_url.host_str() {
@@ -106,23 +109,14 @@ fn list_changed_files(repo_path: &Path) -> Result<Vec<PathBuf>> {
     Ok(changed_files.into_iter().collect())
 }
 
-fn process_chat_message(repo_path: &Path, message: &str) -> Result<Option<String>> {
+fn process_chat_message(
+    repo_path: &Path,
+    modified_files: &[ChatModifiedFile],
+) -> Result<Option<String>> {
     let repo_path = std::fs::canonicalize(repo_path)?;
     let repo = git2::Repository::open(&repo_path)?;
 
-    let root = markdown::to_mdast(message, &markdown::ParseOptions::default()).unwrap();
-    let code_blocks: Vec<_> = match root.children() {
-        Some(nodes) => nodes
-            .into_iter()
-            .filter_map(|block| match block {
-                markdown::mdast::Node::Code(code) => Some(code),
-                _ => None,
-            })
-            .collect(),
-        None => return Ok(None),
-    };
-
-    if code_blocks.len() == 0 {
+    if modified_files.len() == 0 {
         return Ok(None);
     }
 
@@ -143,25 +137,16 @@ fn process_chat_message(repo_path: &Path, message: &str) -> Result<Option<String
         &[&parent_commit],
     )?;
 
-    let mut positions = vec![];
-
-    // TODO: do we return a diff for each code block?
-    for md_code_block in &code_blocks {
-        // This will often only be 1 file, but sometimes the model will output multiple files
-        // in one code block.
-        let files = extract_bismuth_files_from_code_block(&md_code_block.value);
-        for (file_name, content) in files {
-            trace!("Writing file: {}", file_name);
-            let mut file_name = file_name.as_str();
-            file_name = file_name.trim_start_matches('/');
-            let full_path = repo_path.join(file_name);
-            if !full_path.starts_with(&repo_path) {
-                return Err(anyhow::anyhow!("Invalid file path"));
-            }
-            std::fs::create_dir_all(full_path.parent().unwrap())?;
-            std::fs::write(full_path, content)?;
+    for mf in modified_files {
+        trace!("Writing file: {}", mf.project_path);
+        let mut file_name = mf.project_path.as_str();
+        file_name = file_name.trim_start_matches('/');
+        let full_path = repo_path.join(file_name);
+        if !full_path.starts_with(&repo_path) {
+            return Err(anyhow::anyhow!("Invalid file path"));
         }
-        positions.push(md_code_block.position.clone().unwrap());
+        std::fs::create_dir_all(full_path.parent().unwrap())?;
+        std::fs::write(full_path, &mf.content)?;
     }
 
     index.add_all(&["*"], git2::IndexAddOption::DEFAULT, None)?;
@@ -479,6 +464,8 @@ struct ChatHistoryWidget {
     scroll_max: usize,
     scroll_state: ratatui::widgets::ScrollbarState,
     code_block_hitboxes: Vec<(usize, usize)>,
+
+    selection: Option<((usize, usize), (usize, usize))>,
 }
 
 impl Widget for &mut ChatHistoryWidget {
@@ -691,6 +678,7 @@ impl App {
                 scroll_max: 0,
                 scroll_state: ratatui::widgets::ScrollbarState::default(),
                 code_block_hitboxes: vec![],
+                selection: None,
             },
             input: String::new(),
             input_cursor: 0,
@@ -779,7 +767,9 @@ impl App {
                                 *last = ChatMessage::new(ChatMessageUser::AI, &partial_message);
                             }
                             api::ws::ChatMessageBody::FinalizedMessage {
-                                generated_text, ..
+                                generated_text,
+                                output_modified_files,
+                                ..
                             } => {
                                 {
                                     let mut scrollback = scrollback.lock().unwrap();
@@ -789,7 +779,8 @@ impl App {
                                 }
 
                                 if let Some(diff) =
-                                    process_chat_message(&repo_path, &generated_text).unwrap()
+                                    process_chat_message(&repo_path, &output_modified_files)
+                                        .unwrap()
                                 {
                                     if !diff.is_empty() {
                                         let mut state = state.lock().unwrap();
@@ -837,7 +828,7 @@ impl App {
                     self.input_cursor,
                 )
             })?;
-            if !event::poll(Duration::from_millis(100))? {
+            if !event::poll(Duration::from_millis(20))? {
                 continue;
             }
             match state {
@@ -983,33 +974,62 @@ impl App {
                                 .scroll_state
                                 .position(self.chat_history.scroll_position);
                         }
+                        event::MouseEventKind::Down(btn) if btn == MouseButton::Left => {
+                            let col = mouse.column as usize - 2; // border + padding
+                            let row = mouse.row as usize - 2 + self.chat_history.scroll_position;
+                            self.chat_history.selection = Some(((col, row), (col, row)));
+                        }
+                        event::MouseEventKind::Drag(btn) if btn == MouseButton::Left => {
+                            let col = mouse.column as usize - 2;
+                            let row = mouse.row as usize - 2 + self.chat_history.scroll_position;
+                            if let Some((start, _)) = self.chat_history.selection {
+                                self.chat_history.selection = Some((start, (col, row)));
+                            } else {
+                                // dont think this should happen
+                                self.chat_history.selection = Some(((col, row), (col, row)));
+                            }
+                        }
                         event::MouseEventKind::Up(btn) if btn == MouseButton::Left => {
-                            let mut messages = self.chat_history.messages.lock().unwrap();
-                            let code_blocks = messages.iter_mut().flat_map(|msg| {
-                                msg.blocks.iter_mut().filter_map(|block| match block {
-                                    MessageBlock::Code(code) => Some(code),
-                                    _ => None,
-                                })
-                            });
-                            for ((start, end), block) in self
-                                .chat_history
-                                .code_block_hitboxes
-                                .iter()
-                                .zip(code_blocks)
-                            {
-                                // -1 for the border of chat history
-                                if (*start as isize - self.chat_history.scroll_position as isize)
-                                    <= (mouse.row as isize) - 1
-                                    && (*end as isize - self.chat_history.scroll_position as isize)
-                                        > (mouse.row as isize) - 1
-                                {
-                                    block.folded = !block.folded;
+                            // Only expand when not dragging/making a selection
+                            if let Some((start, end)) = self.chat_history.selection {
+                                if start == end {
+                                    self.chat_history.selection = None;
+
+                                    let mut messages = self.chat_history.messages.lock().unwrap();
+                                    let code_blocks = messages.iter_mut().flat_map(|msg| {
+                                        msg.blocks.iter_mut().filter_map(|block| match block {
+                                            MessageBlock::Code(code) => Some(code),
+                                            _ => None,
+                                        })
+                                    });
+                                    for ((start, end), block) in self
+                                        .chat_history
+                                        .code_block_hitboxes
+                                        .iter()
+                                        .zip(code_blocks)
+                                    {
+                                        // -1 for the border of chat history
+                                        if (*start as isize
+                                            - self.chat_history.scroll_position as isize)
+                                            <= (mouse.row as isize) - 1
+                                            && (*end as isize
+                                                - self.chat_history.scroll_position as isize)
+                                                > (mouse.row as isize) - 1
+                                        {
+                                            block.folded = !block.folded;
+                                        }
+                                    }
                                 }
                             }
                         }
                         _ => {}
                     },
                     Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
+                        KeyCode::Char('c')
+                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                        {
+                            dbg!("copy");
+                        }
                         KeyCode::Char('d')
                             if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
                         {
