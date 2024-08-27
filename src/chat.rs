@@ -729,7 +729,8 @@ impl App {
                             api::ws::ChatMessageBody::StreamingToken { token, .. } => {
                                 let mut scrollback = scrollback.lock().unwrap();
                                 let last_msg = scrollback.last_mut().unwrap();
-                                let new_raw = last_msg.raw.clone() + &token.text;
+                                let mut new_raw = last_msg.raw.clone() + &token.text;
+                                new_raw = new_raw.replace("\n<BCODE>\n", "\n");
                                 *last_msg = ChatMessage::new(last_msg.user.clone(), &new_raw);
                                 // let nblocks = last_msg.blocks.len();
                                 // let last_block = last_msg.blocks.last_mut().unwrap();
@@ -762,6 +763,9 @@ impl App {
                                 // }
                             }
                             api::ws::ChatMessageBody::PartialMessage { partial_message } => {
+                                let partial_message = partial_message
+                                    .replace("\n<BCODE>\n", "\n")
+                                    .replace("\n</BCODE>\n", "\n");
                                 let mut scrollback = scrollback.lock().unwrap();
                                 let last = scrollback.last_mut().unwrap();
                                 *last = ChatMessage::new(ChatMessageUser::AI, &partial_message);
@@ -774,6 +778,9 @@ impl App {
                                 {
                                     let mut scrollback = scrollback.lock().unwrap();
                                     let last = scrollback.last_mut().unwrap();
+                                    let generated_text = generated_text
+                                        .replace("\n<BCODE>\n", "\n")
+                                        .replace("\n</BCODE>\n", "\n");
                                     *last = ChatMessage::new(ChatMessageUser::AI, &generated_text);
                                     last.finalized = true;
                                 }
