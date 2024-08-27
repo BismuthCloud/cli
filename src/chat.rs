@@ -981,6 +981,7 @@ impl App {
                                 .scroll_state
                                 .position(self.chat_history.scroll_position);
                         }
+                        /*
                         event::MouseEventKind::Down(btn) if btn == MouseButton::Left => {
                             let col = mouse.column as usize - 2; // border + padding
                             let row = mouse.row as usize - 2 + self.chat_history.scroll_position;
@@ -996,38 +997,40 @@ impl App {
                                 self.chat_history.selection = Some(((col, row), (col, row)));
                             }
                         }
+                        */
                         event::MouseEventKind::Up(btn) if btn == MouseButton::Left => {
                             // Only expand when not dragging/making a selection
+                            /*
                             if let Some((start, end)) = self.chat_history.selection {
                                 if start == end {
                                     self.chat_history.selection = None;
-
-                                    let mut messages = self.chat_history.messages.lock().unwrap();
-                                    let code_blocks = messages.iter_mut().flat_map(|msg| {
-                                        msg.blocks.iter_mut().filter_map(|block| match block {
-                                            MessageBlock::Code(code) => Some(code),
-                                            _ => None,
-                                        })
-                                    });
-                                    for ((start, end), block) in self
-                                        .chat_history
-                                        .code_block_hitboxes
-                                        .iter()
-                                        .zip(code_blocks)
-                                    {
-                                        // -1 for the border of chat history
-                                        if (*start as isize
-                                            - self.chat_history.scroll_position as isize)
-                                            <= (mouse.row as isize) - 1
-                                            && (*end as isize
-                                                - self.chat_history.scroll_position as isize)
-                                                > (mouse.row as isize) - 1
-                                        {
-                                            block.folded = !block.folded;
-                                        }
-                                    }
+                            */
+                            let mut messages = self.chat_history.messages.lock().unwrap();
+                            let code_blocks = messages.iter_mut().flat_map(|msg| {
+                                msg.blocks.iter_mut().filter_map(|block| match block {
+                                    MessageBlock::Code(code) => Some(code),
+                                    _ => None,
+                                })
+                            });
+                            for ((start, end), block) in self
+                                .chat_history
+                                .code_block_hitboxes
+                                .iter()
+                                .zip(code_blocks)
+                            {
+                                // -1 for the border of chat history
+                                if (*start as isize - self.chat_history.scroll_position as isize)
+                                    <= (mouse.row as isize) - 1
+                                    && (*end as isize - self.chat_history.scroll_position as isize)
+                                        > (mouse.row as isize) - 1
+                                {
+                                    block.folded = !block.folded;
                                 }
                             }
+                            /*
+                                                           }
+                                                       }
+                            */
                         }
                         _ => {}
                     },
