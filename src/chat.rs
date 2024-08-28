@@ -15,7 +15,7 @@ use ratatui::{
         event::{self, Event, KeyCode, MouseButton},
     },
     layout::{Constraint, Layout, Rect},
-    style::Stylize,
+    style::{Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Clear, Padding, Paragraph, Scrollbar, StatefulWidget, Widget},
 };
@@ -470,7 +470,7 @@ struct ChatHistoryWidget {
 
 impl Widget for &mut ChatHistoryWidget {
     fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
-        let block = ratatui::widgets::Block::new()
+        let block = Block::new()
             .title("Chat History")
             .borders(ratatui::widgets::Borders::ALL)
             .padding(Padding::new(1, 0, 0, 0));
@@ -642,8 +642,7 @@ struct App {
     chat_history: ChatHistoryWidget,
 
     /// Current chatbox input
-    input: String,
-    input_cursor: usize,
+    input: tui_textarea::TextArea<'static>,
 
     client: APIClient,
     ws_stream: Option<
@@ -669,7 +668,7 @@ impl App {
         >,
         client: &APIClient,
     ) -> Self {
-        Self {
+        let mut x = Self {
             repo_path: repo_path.to_path_buf(),
             user: current_user.clone(),
             chat_history: ChatHistoryWidget {
@@ -680,15 +679,22 @@ impl App {
                 code_block_hitboxes: vec![],
                 selection: None,
             },
-            input: String::new(),
-            input_cursor: 0,
+            input: tui_textarea::TextArea::default(),
             client: client.clone(),
             ws_stream: Some(ws_stream),
             project: project.clone(),
             feature: feature.clone(),
             state: Arc::new(Mutex::new(AppState::Chat)),
             focus: true,
-        }
+        };
+        x.clear_input();
+        x
+    }
+
+    fn clear_input(&mut self) {
+        self.input = tui_textarea::TextArea::default();
+        self.input.set_block(Block::bordered().title("Message"));
+        self.input.set_cursor_line_style(Style::default());
     }
 
     async fn run(&mut self) -> Result<()> {
@@ -738,7 +744,7 @@ impl App {
                                 //     MessageBlock::Text(lines) => {
                                 //         if lines.len() > 0 {
                                 //             lines
-                                //                 .last_mut()
+                                //                 .last_mut();
                                 //                 .unwrap()
                                 //                 .spans
                                 //                 .push(Span::raw(token.text));
@@ -832,7 +838,6 @@ impl App {
                     self.state.clone(),
                     &mut self.chat_history,
                     &self.input,
-                    self.input_cursor,
                 )
             })?;
             if !event::poll(Duration::from_millis(20))? {
@@ -1046,47 +1051,6 @@ impl App {
                             let mut state = self.state.lock().unwrap();
                             *state = AppState::Exit;
                         }
-                        KeyCode::Char('w')
-                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-                        {
-                            if self.input_cursor > 0 {
-                                self.input_cursor -= 1;
-                                self.input.remove(self.input_cursor);
-                                while !self.input.is_empty()
-                                    && self.input_cursor > 0
-                                    && !&self.input[..self.input_cursor].ends_with(' ')
-                                {
-                                    self.input_cursor -= 1;
-                                    self.input.remove(self.input_cursor);
-                                }
-                            }
-                        }
-                        KeyCode::Char('e')
-                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-                        {
-                            self.input_cursor = self.input.len();
-                        }
-                        KeyCode::Char('a')
-                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-                        {
-                            self.input_cursor = 0;
-                        }
-                        KeyCode::Char(c) => {
-                            self.input.insert(self.input_cursor, c);
-                            self.input_cursor += 1;
-                        }
-                        KeyCode::Backspace => {
-                            if self.input_cursor > 0 {
-                                self.input.remove(self.input_cursor - 1);
-                                self.input_cursor -= 1;
-                            }
-                        }
-                        KeyCode::Left => {
-                            self.input_cursor = self.input_cursor.saturating_sub(1);
-                        }
-                        KeyCode::Right => {
-                            self.input_cursor = (self.input_cursor + 1).min(self.input.len());
-                        }
                         KeyCode::Esc => {
                             let mut state = self.state.lock().unwrap();
                             *state = AppState::Exit;
@@ -1104,7 +1068,10 @@ impl App {
                                 self.handle_chat_input(&mut write).await?;
                             }
                         }
-                        _ => (),
+                        _ => {
+                            // TODO: shift-enter for newlines?
+                            self.input.input(key);
+                        }
                     },
                     _ => (),
                 },
@@ -1121,11 +1088,12 @@ impl App {
             Message,
         >,
     ) -> Result<()> {
-        if self.input.trim().is_empty() {
+        if self.input.is_empty() {
             return Ok(());
         }
-        if self.input.starts_with('/') {
-            match self.input.as_str() {
+        let input = self.input.lines().to_vec().join("\n");
+        if input.starts_with('/') {
+            match input.as_str() {
                 "/exit" | "/quit" => {
                     let mut state = self.state.lock().unwrap();
                     *state = AppState::Exit;
@@ -1157,47 +1125,48 @@ impl App {
                     ));
                 }
             }
-            self.input.clear();
-            self.input_cursor = 0;
+            self.clear_input();
             return Ok(());
         }
-        let mut scrollback = self.chat_history.messages.lock().unwrap();
 
-        let mut msg = ChatMessage::new(ChatMessageUser::User(self.user.name.clone()), &self.input);
-        msg.finalized = true;
-        scrollback.push(msg);
+        {
+            let mut scrollback = self.chat_history.messages.lock().unwrap();
 
-        let mut ai_msg = ChatMessage::new(ChatMessageUser::AI, "");
-        ai_msg.blocks.clear();
-        ai_msg.blocks.push(MessageBlock::Thinking);
-        scrollback.push(ai_msg);
+            let mut msg = ChatMessage::new(ChatMessageUser::User(self.user.name.clone()), &input);
+            msg.finalized = true;
+            scrollback.push(msg);
 
-        let modified_files = list_changed_files(&self.repo_path)?
-            .into_iter()
-            .map(|path| {
-                let content =
-                    std::fs::read_to_string(&self.repo_path.join(&path)).unwrap_or("".to_string());
-                api::ws::ChatModifiedFile {
-                    name: path.file_name().unwrap().to_str().unwrap().to_string(),
-                    project_path: path.to_str().unwrap().to_string(),
-                    content,
-                }
-            })
-            .collect();
+            let mut ai_msg = ChatMessage::new(ChatMessageUser::AI, "");
+            ai_msg.blocks.clear();
+            ai_msg.blocks.push(MessageBlock::Thinking);
+            scrollback.push(ai_msg);
 
-        write
-            .send(Message::Text(
-                serde_json::to_string(&api::ws::Message::Chat(api::ws::ChatMessage {
-                    message: self.input.clone(),
-                    modified_files,
-                    request_type_analysis: false,
-                }))?
-                .into(),
-            ))
-            .await?;
+            let modified_files = list_changed_files(&self.repo_path)?
+                .into_iter()
+                .map(|path| {
+                    let content = std::fs::read_to_string(&self.repo_path.join(&path))
+                        .unwrap_or("".to_string());
+                    api::ws::ChatModifiedFile {
+                        name: path.file_name().unwrap().to_str().unwrap().to_string(),
+                        project_path: path.to_str().unwrap().to_string(),
+                        content,
+                    }
+                })
+                .collect();
 
-        self.input.clear();
-        self.input_cursor = 0;
+            write
+                .send(Message::Text(
+                    serde_json::to_string(&api::ws::Message::Chat(api::ws::ChatMessage {
+                        message: input.clone(),
+                        modified_files,
+                        request_type_analysis: false,
+                    }))?
+                    .into(),
+                ))
+                .await?;
+        }
+
+        self.clear_input();
 
         Ok(())
     }
@@ -1263,8 +1232,7 @@ fn ui(
     focus: bool,
     state: Arc<Mutex<AppState>>,
     chat_history: &mut ChatHistoryWidget,
-    input: &str,
-    input_cursor: usize,
+    input: &tui_textarea::TextArea,
 ) {
     let _ = match &*state.lock().unwrap() {
         AppState::Chat => {
@@ -1294,11 +1262,7 @@ fn ui(
 
     frame.render_widget(chat_history, history_area);
 
-    let input_widget =
-        Paragraph::new(input).block(ratatui::widgets::Block::bordered().title("Message"));
-    frame.render_widget(input_widget, input_area);
-
-    frame.set_cursor(input_area.x + input_cursor as u16 + 1, input_area.y + 1);
+    frame.render_widget(input, input_area);
 
     let mut state = state.lock().unwrap();
     match &mut *state {
