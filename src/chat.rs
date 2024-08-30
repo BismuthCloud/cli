@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{anyhow, Result};
@@ -21,7 +21,6 @@ use ratatui::{
 };
 use syntect::easy::HighlightLines;
 use syntect::util::LinesWithEndings;
-use syntect_tui::into_span;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use url::Url;
 
@@ -294,16 +293,22 @@ impl CodeBlock {
                     h.highlight_line(line, &ps)
                         .unwrap()
                         .into_iter()
-                        .filter_map(|segment| {
-                            into_span(segment).ok().map(|span| {
-                                let style = span
-                                    .style
-                                    // Clear the background color
-                                    .bg(ratatui::style::Color::Reset)
-                                    // Clear underline since this causes issues in iTerm2 (some things end up with a weird background color)
-                                    .underline_color(ratatui::style::Color::Reset);
-                                span.style(style)
-                            })
+                        .map(|(syntect_style, content)| {
+                            Span::styled(
+                                content,
+                                Style {
+                                    fg: match syntect_style.foreground {
+                                        syntect::highlighting::Color { r, g, b, a } => {
+                                            Some(ratatui::style::Color::Rgb(r, g, b))
+                                        }
+                                        _ => None,
+                                    },
+                                    bg: None,
+                                    underline_color: None,
+                                    add_modifier: ratatui::style::Modifier::empty(),
+                                    sub_modifier: ratatui::style::Modifier::empty(),
+                                },
+                            )
                         })
                         .collect::<Vec<Span>>(),
                 )
@@ -796,6 +801,7 @@ impl App {
             dead_tx.send(()).unwrap();
         });
 
+        let mut last_draw = Instant::now();
         loop {
             let state = { self.state.lock().unwrap().clone() };
             if let AppState::Exit = state {
@@ -805,16 +811,19 @@ impl App {
             if dead_rx.try_recv().is_ok() {
                 return Err(anyhow!("Chat connection closed"));
             }
-            terminal.draw(|frame| {
-                ui(
-                    frame,
-                    self.focus,
-                    self.state.clone(),
-                    &mut self.chat_history,
-                    &self.input,
-                )
-            })?;
-            if !event::poll(Duration::from_millis(20))? {
+            if last_draw.elapsed() > Duration::from_millis(40) {
+                last_draw = Instant::now();
+                terminal.draw(|frame| {
+                    ui(
+                        frame,
+                        self.focus,
+                        self.state.clone(),
+                        &mut self.chat_history,
+                        &self.input,
+                    )
+                })?;
+            }
+            if !event::poll(Duration::from_millis(40))? {
                 continue;
             }
             match state {
