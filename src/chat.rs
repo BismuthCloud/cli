@@ -38,41 +38,6 @@ fn websocket_url(api_url: &Url) -> &'static str {
     }
 }
 
-/// Extract files denoted with the BISMUTH FILE comment from a code block.
-fn extract_bismuth_files_from_code_block(data: &str) -> HashMap<String, String> {
-    let file_regex = lazy_regex::regex!(r"^\s*#\s*BISMUTH FILE\s*:\s*(.*)$");
-
-    let lines: Vec<&str> = data.split('\n').collect();
-    let mut current_file_name: Option<String> = None;
-    let mut current_file_content = String::new();
-    let mut files: HashMap<String, String> = HashMap::new();
-
-    for (lidx, line) in lines.iter().enumerate() {
-        if let Some(captures) = file_regex.captures(line) {
-            let file_name = captures[1].trim();
-
-            if file_name.ends_with(".md") {
-                files.insert(format!("src/{}", file_name), lines[lidx + 1..].join("\n"));
-                return files;
-            }
-
-            if let Some(current_name) = current_file_name {
-                files.insert(current_name, current_file_content.trim().to_string());
-                current_file_content.clear();
-            }
-            current_file_name = Some(file_name.to_string());
-        }
-        current_file_content.push_str(line);
-        current_file_content.push('\n');
-    }
-
-    if let Some(current_name) = current_file_name {
-        files.insert(current_name, current_file_content.trim().to_string());
-    }
-
-    files
-}
-
 /// List files that have changed in the working directory compared to the upstream branch.
 fn list_changed_files(repo_path: &Path) -> Result<Vec<PathBuf>> {
     let repo = git2::Repository::open(&repo_path)?;
@@ -330,9 +295,15 @@ impl CodeBlock {
                         .unwrap()
                         .into_iter()
                         .filter_map(|segment| {
-                            into_span(segment)
-                                .ok()
-                                .map(|span| span.bg(ratatui::style::Color::Reset))
+                            into_span(segment).ok().map(|span| {
+                                let style = span
+                                    .style
+                                    // Clear the background color
+                                    .bg(ratatui::style::Color::Reset)
+                                    // Clear underline since this causes issues in iTerm2 (some things end up with a weird background color)
+                                    .underline_color(ratatui::style::Color::Reset);
+                                span.style(style)
+                            })
                         })
                         .collect::<Vec<Span>>(),
                 )
@@ -371,7 +342,10 @@ struct ChatMessage {
 
 impl ChatMessage {
     fn new(user: ChatMessageUser, content: &str) -> Self {
-        let root = markdown::to_mdast(content, &markdown::ParseOptions::default()).unwrap();
+        let content = content
+            .replace("\n<BCODE>\n", "\n")
+            .replace("\n</BCODE>\n", "\n");
+        let root = markdown::to_mdast(&content, &markdown::ParseOptions::default()).unwrap();
         let mut blocks: Vec<_> = match root.children() {
             Some(nodes) => nodes
                 .into_iter()

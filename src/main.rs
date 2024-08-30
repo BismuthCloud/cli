@@ -223,7 +223,7 @@ async fn get_project_and_feature_for_repo(
                 }
             }
             return Err(anyhow!(
-                "Unable to determine feature (branch name does not match)"
+                "Unable to determine feature (current branch is not pushed?)"
             ));
         }
     }
