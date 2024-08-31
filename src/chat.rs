@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
@@ -298,6 +298,7 @@ impl CodeBlock {
                                 content,
                                 Style {
                                     fg: match syntect_style.foreground {
+                                        // TODO: detect terminal and disable highlighting if 24 bit color is unsupported
                                         syntect::highlighting::Color { r, g, b, a } => {
                                             Some(ratatui::style::Color::Rgb(r, g, b))
                                         }
@@ -1241,7 +1242,7 @@ fn ui(
         ratatui::layout::Constraint::Percentage(100),
         ratatui::layout::Constraint::Min(3),
     ]);
-    let [history_area, input_area] = vertical.areas(frame.size());
+    let [history_area, input_area] = vertical.areas(frame.area());
 
     frame.render_widget(chat_history, history_area);
 
@@ -1250,7 +1251,7 @@ fn ui(
     let mut state = state.lock().unwrap();
     match &mut *state {
         AppState::ReviewDiff(diff_widget) => {
-            frame.render_widget(diff_widget, frame.size());
+            frame.render_widget(diff_widget, frame.area());
         }
         AppState::Help => {
             let help_text = r#"/exit, /quit, or Esc: Exit the chat
@@ -1258,7 +1259,7 @@ fn ui(
 /help: Show this help"#;
             let paragraph = Paragraph::new(help_text)
                 .block(Block::bordered().title("Help (press any key to close)"));
-            let area = centered_paragraph(&paragraph, frame.size());
+            let area = centered_paragraph(&paragraph, frame.area());
             frame.render_widget(Clear, area);
             frame.render_widget(paragraph, area);
         }
