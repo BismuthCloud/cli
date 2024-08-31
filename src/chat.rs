@@ -512,7 +512,7 @@ impl Widget for &mut ChatHistoryWidget {
                         // have to "simulate" line wrapping here to get an accurate line count
                         line_idx += Paragraph::new(ratatui::text::Text::from_iter(lines.clone()))
                             .wrap(ratatui::widgets::Wrap { trim: false })
-                            .line_count(area.width - 2);
+                            .line_count(area.width - 3); // -1 for each L/R border + 1 padding
                         lines
                     })
                     .collect();
@@ -526,9 +526,9 @@ impl Widget for &mut ChatHistoryWidget {
             .scroll((self.scroll_position as u16, 0))
             .wrap(ratatui::widgets::Wrap { trim: false });
 
-        // -2 to account for the borders
+        // -2 to account for the borders + l padding
         // +3 so you can scroll past the bottom a bit to see this is really the end
-        let nlines = paragraph.line_count(area.width - 2) + 3;
+        let nlines = paragraph.line_count(area.width - 3) + 3;
         let old_scroll_max = self.scroll_max;
         self.scroll_max = nlines.max(area.height as usize) - (area.height as usize);
         // Auto scroll to the bottom if we were already at the bottom
