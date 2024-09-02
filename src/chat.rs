@@ -47,8 +47,9 @@ fn list_changed_files(repo_path: &Path) -> Result<Vec<PathBuf>> {
         .target()
         .unwrap();
     let upstream_tree = repo.find_commit(upstream_commit)?.tree()?;
-    // Diff tree to index
-    let diff = repo.diff_tree_to_workdir_with_index(Some(&upstream_tree), None)?;
+    let head_tree = repo.find_commit(repo.head()?.target().unwrap())?.tree()?;
+    // Diff tree to HEAD
+    let diff = repo.diff_tree_to_tree(Some(&upstream_tree), Some(&head_tree), None)?;
     let mut changed_files = HashSet::new();
     diff.foreach(
         &mut |delta, _| {
@@ -59,17 +60,32 @@ fn list_changed_files(repo_path: &Path) -> Result<Vec<PathBuf>> {
         None,
         None,
     )?;
-    // Then diff index to workdir
-    let diff = repo.diff_index_to_workdir(None, None)?;
-    diff.foreach(
-        &mut |delta, _| {
-            changed_files.insert(delta.new_file().path().unwrap().to_path_buf());
-            true
-        },
-        None,
-        None,
-        None,
-    )?;
+    // Then index to workdir + untracked
+    let statuses = repo.statuses(None)?;
+    for status in statuses.iter() {
+        println!("{:?}", status.status());
+        match status.status() {
+            git2::Status::WT_NEW
+            | git2::Status::WT_MODIFIED
+            | git2::Status::WT_DELETED
+            | git2::Status::INDEX_NEW
+            | git2::Status::INDEX_MODIFIED
+            | git2::Status::INDEX_DELETED => {
+                changed_files.insert(PathBuf::from(status.path().unwrap()));
+            }
+            git2::Status::WT_RENAMED | git2::Status::INDEX_RENAMED => {
+                if let Some(stuff) = status.head_to_index() {
+                    changed_files.insert(PathBuf::from(stuff.old_file().path().unwrap()));
+                    changed_files.insert(PathBuf::from(stuff.new_file().path().unwrap()));
+                }
+                if let Some(stuff) = status.index_to_workdir() {
+                    changed_files.insert(PathBuf::from(stuff.old_file().path().unwrap()));
+                    changed_files.insert(PathBuf::from(stuff.new_file().path().unwrap()));
+                }
+            }
+            _ => {}
+        }
+    }
     Ok(changed_files.into_iter().collect())
 }
 
@@ -1342,5 +1358,112 @@ mod terminal {
         }
         // Reset cursor shape
         let _ = Command::new("tput").arg("cnorm").status();
+    }
+}
+
+mod test {
+    use super::*;
+    use std::collections::HashSet;
+    use std::fs;
+
+    fn copy_dir_all(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<()> {
+        fs::create_dir_all(&dst)?;
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            let ty = entry.file_type()?;
+            if ty.is_dir() {
+                copy_dir_all(entry.path(), dst.as_ref().join(entry.file_name()))?;
+            } else {
+                fs::copy(entry.path(), dst.as_ref().join(entry.file_name()))?;
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_changed_files() -> Result<()> {
+        let tmpdir = tempfile::tempdir()?;
+        let remote_tmpdir = tempfile::tempdir()?;
+
+        let repo = git2::Repository::init(tmpdir.path())?;
+        let mut bismuth_remote = repo.remote("bismuth", remote_tmpdir.path().to_str().unwrap())?;
+
+        let signature = git2::Signature::now("Bismuth-Test", "test@app.bismuth.cloud")?;
+        {
+            let mut index = repo.index()?;
+            let tree_id = index.write_tree()?;
+            let tree = repo.find_tree(tree_id)?;
+            repo.commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "Initial commit",
+                &tree,
+                &[],
+            )?;
+        }
+
+        fs::write(tmpdir.path().join("pushed"), "pushed")?;
+        {
+            let mut index = repo.index()?;
+            index.add_all(&["*"], git2::IndexAddOption::DEFAULT, None)?;
+            index.write()?;
+            let tree_id = index.write_tree()?;
+            let tree = repo.find_tree(tree_id)?;
+            let head = repo.head()?;
+            let parent_commit = repo.find_commit(head.target().unwrap())?;
+            repo.commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "Test Commit",
+                &tree,
+                &[&parent_commit],
+            )?;
+        }
+        copy_dir_all(&tmpdir, &remote_tmpdir)?;
+        bismuth_remote.fetch(&["main"], None, None)?;
+
+        fs::write(tmpdir.path().join("committed"), "committed")?;
+        {
+            let mut index = repo.index()?;
+            index.add_all(&["*"], git2::IndexAddOption::DEFAULT, None)?;
+            index.write()?;
+            let tree_id = index.write_tree()?;
+            let tree = repo.find_tree(tree_id)?;
+            let head = repo.head()?;
+            let parent_commit = repo.find_commit(head.target().unwrap())?;
+            repo.commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "Test Commit",
+                &tree,
+                &[&parent_commit],
+            )?;
+        }
+
+        fs::write(tmpdir.path().join("staged"), "staged")?;
+        {
+            let mut index = repo.index()?;
+            index.add_all(&["*"], git2::IndexAddOption::DEFAULT, None)?;
+            index.write()?;
+        }
+
+        fs::write(tmpdir.path().join("untracked"), "untracked")?;
+
+        let changed_files: HashSet<_> = list_changed_files(tmpdir.path())?
+            .into_iter()
+            .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            changed_files,
+            ["committed", "staged", "untracked"]
+                .iter()
+                .map(|f| f.to_string())
+                .collect()
+        );
+
+        Ok(())
     }
 }
