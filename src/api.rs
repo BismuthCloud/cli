@@ -182,17 +182,9 @@ pub mod ws {
     }
 
     #[derive(Debug, Serialize, Deserialize)]
-    #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-    pub enum ResponseState {
-        Writing,
-        Analyzing,
-        Testing,
-    }
-
-    #[derive(Debug, Serialize, Deserialize)]
     #[serde(rename_all = "camelCase")]
     pub struct ResponseStateMessage {
-        pub state: ResponseState,
+        pub state: String,
         pub attempt: u64,
     }
 
