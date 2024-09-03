@@ -184,8 +184,16 @@ pub mod ws {
     #[derive(Debug, Serialize, Deserialize)]
     #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
     pub enum ResponseState {
-        Parallel,
-        Failed,
+        Writing,
+        Analyzing,
+        Testing,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ResponseStateMessage {
+        pub state: ResponseState,
+        pub attempt: u64,
     }
 
     #[derive(Debug)]
@@ -193,7 +201,7 @@ pub mod ws {
         Auth(AuthMessage),
         Ping,
         Chat(ChatMessage),
-        ResponseState(ResponseState),
+        ResponseState(ResponseStateMessage),
     }
 
     impl Serialize for Message {

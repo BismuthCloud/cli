@@ -343,7 +343,7 @@ impl CodeBlock {
 #[derive(Clone, Debug)]
 enum MessageBlock {
     Text(Vec<Line<'static>>),
-    Thinking,
+    Thinking(&'static str),
     Code(CodeBlock),
 }
 
@@ -485,9 +485,10 @@ impl Widget for &mut ChatHistoryWidget {
                     .flat_map(|block| {
                         let mut lines = match block {
                             MessageBlock::Text(lines) => lines.clone(),
-                            MessageBlock::Thinking => {
+                            MessageBlock::Thinking(detail) => {
                                 vec![Line::raw(format!(
-                                    "Thinking {}",
+                                    "{} {}",
+                                    detail,
                                     vec!['|', '\\', '-', '/'][SystemTime::now()
                                         .duration_since(UNIX_EPOCH)
                                         .unwrap()
@@ -799,8 +800,8 @@ impl App {
                             }
                         }
                     }
-                    api::ws::Message::ResponseState(state) => match state {
-                        api::ws::ResponseState::Parallel => {
+                    api::ws::Message::ResponseState(resp) => match resp.state {
+                        api::ws::ResponseState::Writing => {
                             let mut scrollback = scrollback.lock().unwrap();
                             let last = scrollback.last_mut().unwrap();
                             // sorta hacky, but if the last block is code when we start thinking
@@ -808,9 +809,20 @@ impl App {
                             if let Some(MessageBlock::Code(_)) = last.blocks.last() {
                                 last.blocks.pop();
                             }
-                            last.blocks.push(MessageBlock::Thinking);
+                            if let Some(MessageBlock::Thinking(_)) = last.blocks.last() {
+                                *last.blocks.last_mut().unwrap() =
+                                    MessageBlock::Thinking("Fixing a bug");
+                            } else {
+                                last.blocks.push(MessageBlock::Thinking("Writing code"));
+                            }
                         }
-                        api::ws::ResponseState::Failed => {}
+                        api::ws::ResponseState::Analyzing => {
+                            let mut scrollback = scrollback.lock().unwrap();
+                            let last = scrollback.last_mut().unwrap();
+                            *last.blocks.last_mut().unwrap() =
+                                MessageBlock::Thinking("Analyzing code");
+                        }
+                        _ => {}
                     },
                     _ => {}
                 }
@@ -1138,7 +1150,7 @@ impl App {
 
             let mut ai_msg = ChatMessage::new(ChatMessageUser::AI, "");
             ai_msg.blocks.clear();
-            ai_msg.blocks.push(MessageBlock::Thinking);
+            ai_msg.blocks.push(MessageBlock::Thinking("Planning"));
             scrollback.push(ai_msg);
 
             let modified_files = list_changed_files(&self.repo_path)?
