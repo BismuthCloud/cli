@@ -63,7 +63,6 @@ fn list_changed_files(repo_path: &Path) -> Result<Vec<PathBuf>> {
     // Then index to workdir + untracked
     let statuses = repo.statuses(None)?;
     for status in statuses.iter() {
-        println!("{:?}", status.status());
         match status.status() {
             git2::Status::WT_NEW
             | git2::Status::WT_MODIFIED
