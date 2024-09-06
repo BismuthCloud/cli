@@ -56,9 +56,18 @@ pub struct FeatureConfig {
     pub value: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub enum ContainerState {
+    Invalid = 0,
+    Starting = 1,
+    Running = 2,
+    Paused = 3,
+    Failed = 4,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DeployStatusResponse {
-    pub status: String,
+    pub status: ContainerState,
     pub commit: String,
 }
 

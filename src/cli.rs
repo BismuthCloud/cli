@@ -56,10 +56,17 @@ impl FeatureRef {
         &self.feature
     }
     pub fn split(&self) -> (IdOrName, IdOrName) {
-        let mut parts = self.feature.splitn(2, '/');
+        let parts: Vec<&str> = self.feature.splitn(2, '/').collect();
+        if parts.len() != 2 {
+            // tODO: nice error message
+            panic!(
+                "Invalid feature reference (use `project/feature`): {}",
+                self.feature
+            );
+        }
         (
-            IdOrName::Name(parts.next().unwrap().to_string()),
-            IdOrName::Name(parts.next().unwrap().to_string()),
+            IdOrName::Name(parts[0].to_string()),
+            IdOrName::Name(parts[1].to_string()),
         )
     }
 }
@@ -76,7 +83,7 @@ pub struct LiteralOrFile {
     pub file: Option<PathBuf>,
 }
 
-#[derive(Debug, Args)]
+#[derive(Debug, Clone, Args)]
 pub struct GlobalOpts {
     #[arg(long, default_value = std::env::var("BISMUTH_API").unwrap_or("https://api.bismuth.cloud".to_string()))]
     pub api_url: Url,
@@ -119,6 +126,10 @@ pub enum Command {
         #[clap(subcommand)]
         command: SQLCommand,
     },
+    Billing {
+        #[clap(subcommand)]
+        command: BillingCommand,
+    },
     /// Create a new Bismuth project, and import an existing Git repository into it.
     /// Alias of `project import`.
     Import(ImportSource),
@@ -126,6 +137,10 @@ pub enum Command {
     Deploy {
         #[clap(flatten)]
         feature: FeatureRef,
+        #[clap(long, default_value = "false")]
+        no_wait: bool,
+        #[clap(long, default_value = "15")]
+        timeout: u64,
     },
     /// Get the status of a deployment. Alias of `feature deploy-status`.
     DeployStatus {
@@ -212,6 +227,10 @@ pub enum FeatureCommand {
     Deploy {
         #[clap(flatten)]
         feature: FeatureRef,
+        #[clap(long, default_value = "false")]
+        no_wait: bool,
+        #[clap(long, default_value = "15")]
+        timeout: u64,
     },
     /// Get the status of a deployment
     DeployStatus {
@@ -306,4 +325,10 @@ pub enum SQLCommand {
         #[clap(flatten)]
         query: LiteralOrFile,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BillingCommand {
+    /// Open Stripe subscription management page
+    ManageSubscription,
 }

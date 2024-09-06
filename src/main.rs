@@ -3,6 +3,7 @@ use clap::Parser as _;
 use colored::Colorize;
 use futures::{StreamExt as _, TryStreamExt};
 use log::debug;
+use once_cell::sync::OnceCell;
 use reqwest_eventsource::EventSource;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -21,6 +22,8 @@ mod cli;
 use cli::{Cli, IdOrName};
 mod chat;
 use chat::start_chat;
+
+static GLOBAL_OPTS: OnceCell<cli::GlobalOpts> = OnceCell::new();
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Config {
@@ -119,6 +122,26 @@ where
     }
 }
 
+async fn confirm(prompt: impl Into<String>, default: bool) -> Result<bool> {
+    print!(
+        "{} [{}/{}] ",
+        prompt.into(),
+        if default { "Y" } else { "y" },
+        if default { "n" } else { "N" }
+    );
+    std::io::stdout().flush()?;
+    let confirm = tokio::io::BufReader::new(tokio::io::stdin())
+        .lines()
+        .next_line()
+        .await?
+        .unwrap_or("".to_string())
+        .to_lowercase();
+    if confirm.is_empty() || (confirm != "y" && confirm != "n") {
+        return Ok(default);
+    }
+    return Ok(confirm == "y");
+}
+
 fn github_app_url(api_url: &Url) -> &'static str {
     match api_url.host_str() {
         Some("localhost") => "https://github.com/apps/bismuth-cloud-dev/installations/new",
@@ -183,6 +206,29 @@ async fn resolve_feature_id(
     Ok(get_feature.json().await?)
 }
 
+fn set_bismuth_remote(repo: &Path, project: &api::Project) -> Result<()> {
+    let mut git_url = GLOBAL_OPTS
+        .get()
+        .unwrap()
+        .api_url
+        .clone()
+        .join(&format!("/git/{}", project.hash))?;
+    git_url.set_password(Some(&project.clone_token)).unwrap();
+
+    let git_repo = git2::Repository::open(repo)?;
+    match git_repo.find_remote("bismuth") {
+        Ok(_) => {
+            debug!("Updating existing bismuth remote URL");
+            git_repo.remote_set_url("bismuth", &git_url.to_string())?;
+        }
+        Err(_) => {
+            debug!("Adding new bismuth remote");
+            git_repo.remote("bismuth", &git_url.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 async fn get_project_and_feature_for_repo(
     client: &APIClient,
     repo: &Path,
@@ -232,13 +278,18 @@ async fn get_project_and_feature_for_repo(
     ));
 }
 
-async fn project_import(
-    source: &cli::ImportSource,
-    api_url: &Url,
-    client: &APIClient,
-) -> Result<()> {
+async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Result<()> {
+    let mut gh_repos = client
+        .get("/projects/connect/github/repo")
+        .send()
+        .await?
+        .error_body_for_status()
+        .await?
+        .json::<Vec<api::GitHubRepo>>()
+        .await?;
+
     if !source.github {
-        let repo = source.repo.clone().unwrap_or_else(|| PathBuf::from("."));
+        let repo = source.repo.clone().unwrap_or(PathBuf::from("."));
         if !repo.exists() {
             return Err(anyhow!("Repo does not exist"));
         }
@@ -246,6 +297,72 @@ async fn project_import(
         if !repo.join(".git").is_dir() {
             return Err(anyhow!("Directory is not a git repository"));
         }
+
+        let git_repo = git2::Repository::open(repo.as_path())?;
+        if let Ok(remote) = git_repo.find_remote("origin") {
+            let remote_url = remote.url().unwrap().to_string();
+            if remote_url.contains("github.com") {
+                // org/repo
+                // http will have github.com/... and ssh will have github.com:...
+                // and trim off any .git
+                let gh_repo_name =
+                    remote_url.split("github.com").last().unwrap()[1..].trim_end_matches(".git");
+
+                println!("This repository is from GitHub.");
+                println!(
+                    "If you own this repository, it's recommended to use the Bismuth GitHub App to link it."
+                );
+                if confirm("Would you like to do this?", true).await? {
+                    if gh_repos.is_empty()
+                        || !gh_repos
+                            .iter()
+                            .any(|r| r.repo.to_lowercase() == gh_repo_name)
+                    {
+                        println!("Press any key to open the installation page.");
+                        tokio::io::stdin().read(&mut [0]).await?;
+                        open::that_detached(github_app_url(&client.base_url))?;
+                        print!("Waiting for app install");
+                        std::io::stdout().flush()?;
+                        loop {
+                            tokio::time::sleep(Duration::from_secs(2)).await;
+                            print!(".");
+                            std::io::stdout().flush()?;
+                            gh_repos = client
+                                .get("/projects/connect/github/repo")
+                                .send()
+                                .await?
+                                .error_body_for_status()
+                                .await?
+                                .json::<Vec<api::GitHubRepo>>()
+                                .await?;
+                            if !gh_repos.is_empty() {
+                                break;
+                            }
+                        }
+                    }
+                    let mut gh_repo = gh_repos
+                        .iter()
+                        .find(|r| r.repo.to_lowercase() == gh_repo_name);
+                    if gh_repo.is_none() {
+                        println!("I can't find this repository in the list of repositories the GitHub App has access to.");
+                        gh_repo = Some(choice(&gh_repos, "repository").await?);
+                    }
+                    let project: api::Project = client
+                        .post("/projects")
+                        .json(&api::CreateProjectRequest::Repo(gh_repo.unwrap().clone()))
+                        .send()
+                        .await?
+                        .error_body_for_status()
+                        .await?
+                        .json()
+                        .await?;
+                    set_bismuth_remote(&repo, &project)?;
+                    println!("Successfully imported {}!", gh_repo.unwrap().repo);
+                    return Ok(());
+                }
+            }
+        }
+
         let project: api::Project = client
             .post("/projects")
             .json(&api::CreateProjectRequest::Name(api::CreateProjectRepo {
@@ -257,20 +374,8 @@ async fn project_import(
             .await?
             .json()
             .await?;
-        let mut git_url = api_url.clone().join(&format!("/git/{}", project.hash))?;
-        git_url.set_password(Some(&project.clone_token)).unwrap();
 
-        let git_repo = git2::Repository::open(repo.as_path())?;
-        match git_repo.find_remote("bismuth") {
-            Ok(_) => {
-                debug!("Updating existing bismuth remote URL");
-                git_repo.remote_set_url("bismuth", &git_url.to_string())?;
-            }
-            Err(_) => {
-                debug!("Adding new bismuth remote");
-                git_repo.remote("bismuth", &git_url.to_string())?;
-            }
-        }
+        set_bismuth_remote(&repo, &project)?;
         let branch_name = git_repo.head()?.shorthand().unwrap().to_string();
 
         Command::new("git")
@@ -303,20 +408,31 @@ async fn project_import(
                 );
         Ok(())
     } else {
-        let repos = client
-            .get("/projects/connect/github/repo")
-            .send()
-            .await?
-            .error_body_for_status()
-            .await?
-            .json::<Vec<api::GitHubRepo>>()
-            .await?;
-        if repos.is_empty() {
-            println!("You'll need to install the GitHub app first.");
-            print!("Go to {} to install it.", github_app_url(&client.base_url));
-            return Ok(());
+        if gh_repos.is_empty() {
+            println!("You'll need to install the GitHub App first.");
+            println!("Press any key to open the installation page.");
+            tokio::io::stdin().read(&mut [0]).await?;
+            open::that_detached(github_app_url(&client.base_url))?;
+            print!("Waiting for app install");
+            std::io::stdout().flush()?;
+            loop {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                print!(".");
+                std::io::stdout().flush()?;
+                gh_repos = client
+                    .get("/projects/connect/github/repo")
+                    .send()
+                    .await?
+                    .error_body_for_status()
+                    .await?
+                    .json::<Vec<api::GitHubRepo>>()
+                    .await?;
+                if !gh_repos.is_empty() {
+                    break;
+                }
+            }
         }
-        let repo = choice(&repos, "repository").await?;
+        let repo = choice(&gh_repos, "repository").await?;
         client
             .post("/projects")
             .json(&api::CreateProjectRequest::Repo(repo.clone()))
@@ -328,8 +444,9 @@ async fn project_import(
     }
 }
 
-fn project_clone(project: &api::Project, api_url: &Url, outdir: Option<&Path>) -> Result<PathBuf> {
-    let mut auth_url = api_url.clone();
+fn project_clone(project: &api::Project, outdir: Option<&Path>) -> Result<PathBuf> {
+    let mut auth_url = GLOBAL_OPTS.get().unwrap().api_url.clone();
+    auth_url.set_username("git").unwrap();
     auth_url.set_password(Some(&project.clone_token)).unwrap();
 
     let outdir = outdir
@@ -417,6 +534,7 @@ async fn feature_deploy(
     project: &api::Project,
     feature: &api::Feature,
     client: &APIClient,
+    timeout: Option<Duration>,
 ) -> Result<()> {
     if let Ok(true) = check_not_pushed(&std::env::current_dir()?, project, feature) {
         println!(
@@ -424,14 +542,7 @@ async fn feature_deploy(
             "Repository has commits not pushed to Bismuth - you may be deploying an old version."
                 .yellow()
         );
-        print!("Would you like to push changes now? [Y/n] ");
-        std::io::stdout().flush()?;
-        let confirm = tokio::io::BufReader::new(tokio::io::stdin())
-            .lines()
-            .next_line()
-            .await?
-            .unwrap_or("n".to_string());
-        if confirm.trim().to_lowercase() == "y" {
+        if confirm("Would you like to push changes now?", true).await? {
             Command::new("git")
                 .arg("push")
                 .arg("--force")
@@ -459,7 +570,47 @@ async fn feature_deploy(
         .await?
         .error_body_for_status()
         .await?;
-    Ok(())
+
+    if timeout.is_none() {
+        return Ok(());
+    }
+
+    print!("Waiting for deployment to be healthy");
+    std::io::stdout().flush()?;
+    for _ in 0..timeout.unwrap().as_secs() {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        print!(".");
+        std::io::stdout().flush()?;
+
+        let status: api::DeployStatusResponse = client
+            .get(&format!(
+                "/projects/{}/features/{}/deploy/status",
+                project.id, feature.id
+            ))
+            .send()
+            .await?
+            .error_body_for_status()
+            .await?
+            .json()
+            .await?;
+
+        match status.status {
+            api::ContainerState::Running => {
+                let url = feature_get_url(project, feature, client).await?;
+                println!("\nDeployed to {}", url);
+                return Ok(());
+            }
+            api::ContainerState::Failed => {
+                // TODO: print logs?
+                return Err(anyhow!("Deployment failed"));
+            }
+            _ => {}
+        }
+    }
+
+    println!("");
+
+    Err(anyhow!("Timed out waiting for deployment"))
 }
 
 async fn feature_deploy_status(
@@ -479,7 +630,7 @@ async fn feature_deploy_status(
         return Ok(());
     }
     let status: api::DeployStatusResponse = resp.error_body_for_status().await?.json().await?;
-    println!("Status: {}", status.status);
+    println!("Status: {:?}", status.status);
     println!("Deployed Commit: {}", status.commit);
     Ok(())
 }
@@ -505,7 +656,7 @@ async fn feature_get_url(
     project: &api::Project,
     feature: &api::Feature,
     client: &APIClient,
-) -> Result<()> {
+) -> Result<String> {
     let resp: api::InvokeURLResponse = client
         .get(&format!(
             "/projects/{}/features/{}/invoke_url",
@@ -517,8 +668,7 @@ async fn feature_get_url(
         .await?
         .json()
         .await?;
-    println!("{}", resp.url);
-    Ok(())
+    Ok(resp.url)
 }
 
 async fn feature_logs(
@@ -536,7 +686,10 @@ async fn feature_logs(
         while let Some(event) = es.next().await {
             match event {
                 Ok(reqwest_eventsource::Event::Open) => {}
-                Ok(reqwest_eventsource::Event::Message(message)) => print!("{}", message.data),
+                Ok(reqwest_eventsource::Event::Message(message)) => {
+                    print!("{}", message.data);
+                    std::io::stdout().flush()?;
+                }
                 Err(err) => {
                     eprintln!("Error streaming logs: {}", err);
                     es.close();
@@ -684,6 +837,8 @@ async fn check_version() -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Cli::parse();
+    GLOBAL_OPTS.set(args.global.clone()).unwrap();
+
     env_logger::Builder::new()
         .filter_level(args.global.verbose.log_level_filter())
         .init();
@@ -766,12 +921,10 @@ async fn main() -> Result<()> {
                     .await?;
                 Ok(())
             }
-            cli::ProjectCommand::Import(source) => {
-                project_import(source, &args.global.api_url, &client).await
-            }
+            cli::ProjectCommand::Import(source) => project_import(source, &client).await,
             cli::ProjectCommand::Clone { project, outdir } => {
                 let project = resolve_project_id(&client, project).await?;
-                project_clone(&project, &args.global.api_url, outdir.as_deref())?;
+                project_clone(&project, outdir.as_deref())?;
                 Ok(())
             }
             cli::ProjectCommand::Link { project } => {
@@ -785,8 +938,9 @@ async fn main() -> Result<()> {
                     .json()
                     .await?;
                 if gh_orgs.is_empty() {
+                    // TODO: wait for link
                     println!("You'll need to install the GitHub app first.");
-                    print!("Go to {} to install it.", github_app_url(&client.base_url));
+                    println!("Go to {} to install it.", github_app_url(&client.base_url));
                     return Ok(());
                 }
                 let gh_org = choice(&gh_orgs, "organization").await?;
@@ -808,26 +962,19 @@ async fn main() -> Result<()> {
             }
             cli::ProjectCommand::Delete { project } => {
                 let project = resolve_project_id(&client, project).await?;
-                print!(
-                    "Are you sure you want to delete project {}? [y/N] ",
-                    project.name
-                );
-                std::io::stdout().flush()?;
-
-                let confirm = tokio::io::BufReader::new(tokio::io::stdin())
-                    .lines()
-                    .next_line()
-                    .await?
-                    .unwrap_or("n".to_string());
-                if confirm.trim().to_lowercase() != "y" {
-                    return Ok(());
+                if confirm(
+                    format!("Are you sure you want to delete project {}?", project.name),
+                    false,
+                )
+                .await?
+                {
+                    client
+                        .delete(&format!("/projects/{}", project.id))
+                        .send()
+                        .await?
+                        .error_body_for_status()
+                        .await?;
                 }
-                client
-                    .delete(&format!("/projects/{}", project.id))
-                    .send()
-                    .await?
-                    .error_body_for_status()
-                    .await?;
                 Ok(())
             }
         },
@@ -902,11 +1049,25 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-            cli::FeatureCommand::Deploy { feature } => {
+            cli::FeatureCommand::Deploy {
+                feature,
+                no_wait,
+                timeout,
+            } => {
                 let (project_name, feature_name) = feature.split();
                 let project = resolve_project_id(&client, &project_name).await?;
                 let feature = resolve_feature_id(&client, &project, &feature_name).await?;
-                feature_deploy(&project, &feature, &client).await
+                feature_deploy(
+                    &project,
+                    &feature,
+                    &client,
+                    if *no_wait {
+                        None
+                    } else {
+                        Some(Duration::from_secs(*timeout))
+                    },
+                )
+                .await
             }
             cli::FeatureCommand::DeployStatus { feature } => {
                 let (project_name, feature_name) = feature.split();
@@ -924,7 +1085,9 @@ async fn main() -> Result<()> {
                 let (project_name, feature_name) = feature.split();
                 let project = resolve_project_id(&client, &project_name).await?;
                 let feature = resolve_feature_id(&client, &project, &feature_name).await?;
-                feature_get_url(&project, &feature, &client).await
+                let url = feature_get_url(&project, &feature, &client).await?;
+                println!("{}", url);
+                Ok(())
             }
             cli::FeatureCommand::Logs { feature, follow } => {
                 let (project_name, feature_name) = feature.split();
@@ -1145,13 +1308,42 @@ async fn main() -> Result<()> {
                 Ok(())
             }
         },
+        cli::Command::Billing { command } => match command {
+            cli::BillingCommand::ManageSubscription => {
+                let url = client
+                    .get("/billing/manage")
+                    .send()
+                    .await?
+                    .error_body_for_status()
+                    .await?
+                    .text()
+                    .await?;
+                println!("Opening Stripe subscription management page");
+                open::that_detached(url)?;
+                Ok(())
+            }
+        },
         // Convenience aliases
-        cli::Command::Import(source) => project_import(source, &args.global.api_url, &client).await,
-        cli::Command::Deploy { feature } => {
+        cli::Command::Import(source) => project_import(source, &client).await,
+        cli::Command::Deploy {
+            feature,
+            no_wait,
+            timeout,
+        } => {
             let (project_name, feature_name) = feature.split();
             let project = resolve_project_id(&client, &project_name).await?;
             let feature = resolve_feature_id(&client, &project, &feature_name).await?;
-            feature_deploy(&project, &feature, &client).await
+            feature_deploy(
+                &project,
+                &feature,
+                &client,
+                if *no_wait {
+                    None
+                } else {
+                    Some(Duration::from_secs(*timeout))
+                },
+            )
+            .await
         }
         cli::Command::DeployStatus { feature } => {
             let (project_name, feature_name) = feature.split();
@@ -1169,7 +1361,9 @@ async fn main() -> Result<()> {
             let (project_name, feature_name) = feature.split();
             let project = resolve_project_id(&client, &project_name).await?;
             let feature = resolve_feature_id(&client, &project, &feature_name).await?;
-            feature_get_url(&project, &feature, &client).await
+            let url = feature_get_url(&project, &feature, &client).await?;
+            println!("{}", url);
+            Ok(())
         }
         cli::Command::Logs { feature, follow } => {
             let (project_name, feature_name) = feature.split();
@@ -1216,7 +1410,7 @@ async fn main() -> Result<()> {
                     if repo.exists() {
                         repo.to_path_buf()
                     } else {
-                        project_clone(&project, &args.global.api_url, Some(repo))?
+                        project_clone(&project, Some(repo))?
                     }
                 }
                 None => {
@@ -1229,7 +1423,7 @@ async fn main() -> Result<()> {
                     if remote_url.contains(&project.clone_token) {
                         std::env::current_dir().unwrap()
                     } else {
-                        project_clone(&project, &args.global.api_url, None)?
+                        project_clone(&project, None)?
                     }
                 }
             };

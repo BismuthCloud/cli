@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashSet, VecDeque},
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
@@ -821,6 +821,8 @@ impl App {
         });
 
         let mut last_draw = Instant::now();
+        let mut last_input = Instant::now();
+        let mut input_delay = VecDeque::new();
         loop {
             let state = { self.state.lock().unwrap().clone() };
             if let AppState::Exit = state {
@@ -845,6 +847,11 @@ impl App {
             if !event::poll(Duration::from_millis(40))? {
                 continue;
             }
+            if input_delay.len() == 3 {
+                input_delay.pop_front();
+            }
+            input_delay.push_back(last_input.elapsed());
+            last_input = Instant::now();
             match state {
                 AppState::Exit => {
                     return Ok(());
@@ -928,6 +935,7 @@ impl App {
                     },
                     Event::Mouse(mouse) => match mouse.kind {
                         event::MouseEventKind::ScrollUp => {
+                            // TODO: if cursor row within message field, self.input.scroll instead
                             let mut state = self.state.lock().unwrap();
                             if let AppState::ReviewDiff(diff_widget) = &mut *state {
                                 diff_widget.scroll_position = diff_widget
@@ -1042,11 +1050,12 @@ impl App {
                         _ => {}
                     },
                     Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
+                        /*
                         KeyCode::Char('c')
                             if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
                         {
                             dbg!("copy");
-                        }
+                        } */
                         KeyCode::Char('d')
                             if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
                         {
@@ -1058,16 +1067,24 @@ impl App {
                             *state = AppState::Exit;
                         }
                         KeyCode::Enter => {
-                            let last_generation_done = {
-                                let scrollback = self.chat_history.messages.lock().unwrap();
-                                if let Some(last_msg) = scrollback.last() {
-                                    last_msg.finalized
-                                } else {
-                                    true
+                            // ALT+enter for manual newlines
+                            // or if this is a paste (in which case input delay is very short)
+                            if key.modifiers.contains(event::KeyModifiers::ALT)
+                                || input_delay.iter().all(|d| d < &Duration::from_millis(1))
+                            {
+                                self.input.input(key);
+                            } else {
+                                let last_generation_done = {
+                                    let scrollback = self.chat_history.messages.lock().unwrap();
+                                    if let Some(last_msg) = scrollback.last() {
+                                        last_msg.finalized
+                                    } else {
+                                        true
+                                    }
+                                };
+                                if last_generation_done {
+                                    self.handle_chat_input(&mut write).await?;
                                 }
-                            };
-                            if last_generation_done {
-                                self.handle_chat_input(&mut write).await?;
                             }
                         }
                         _ => {
@@ -1260,7 +1277,7 @@ fn ui(
 
     let vertical = ratatui::layout::Layout::vertical([
         ratatui::layout::Constraint::Percentage(100),
-        ratatui::layout::Constraint::Min(3),
+        ratatui::layout::Constraint::Min((input.lines().len().clamp(1, 3) + 2) as u16),
     ]);
     let [history_area, input_area] = vertical.areas(frame.area());
 
@@ -1277,8 +1294,10 @@ fn ui(
             let help_text = r#"/exit, /quit, or Esc: Exit the chat
 /docs: Open the Bismuth documentation
 /help: Show this help"#;
-            let paragraph = Paragraph::new(help_text)
-                .block(Block::bordered().title("Help (press any key to close)"));
+            let paragraph = Paragraph::new(help_text).block(Block::bordered().title(vec![
+                "Help ".into(),
+                Span::styled("(press any key to close)", ratatui::style::Color::Yellow),
+            ]));
             let area = centered_paragraph(&paragraph, frame.area());
             frame.render_widget(Clear, area);
             frame.render_widget(paragraph, area);
