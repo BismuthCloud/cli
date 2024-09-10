@@ -1,7 +1,7 @@
 use std::{
     collections::{HashSet, VecDeque},
     path::{Path, PathBuf},
-    process::Command,
+    process::{exit, Command},
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -19,6 +19,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Clear, Padding, Paragraph, Scrollbar, StatefulWidget, Widget},
 };
+use std::io;
 use syntect::easy::HighlightLines;
 use syntect::util::LinesWithEndings;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
@@ -694,14 +695,11 @@ impl App {
     }
 
     async fn run(&mut self) -> Result<()> {
-        let mut terminal = terminal::init()?;
-
         let (mut write, mut read) = self.ws_stream.take().unwrap().split();
         let (dead_tx, mut dead_rx) = tokio::sync::oneshot::channel();
 
         let scrollback = self.chat_history.messages.clone();
         let repo_path = self.repo_path.clone();
-        let state = self.state.clone();
         tokio::spawn(async move {
             loop {
                 let message = match read.try_next().await {
@@ -792,9 +790,10 @@ impl App {
                                         .unwrap()
                                 {
                                     if !diff.is_empty() {
-                                        let mut state = state.lock().unwrap();
-                                        *state = AppState::ReviewDiff(DiffReviewWidget::new(diff));
+                                        commit(&repo_path).expect("Expected repo to be commited.");
                                     }
+
+                                    exit(0);
                                 }
                             }
                         }
@@ -820,280 +819,32 @@ impl App {
             dead_tx.send(()).unwrap();
         });
 
-        let mut last_draw = Instant::now();
-        let mut last_input = Instant::now();
-        let mut input_delay = VecDeque::new();
         loop {
-            let state = { self.state.lock().unwrap().clone() };
-            if let AppState::Exit = state {
-                write.close().await?;
-                return Ok(());
-            }
+            let mut input = String::new();
+
+            println!("Please enter some text:");
+
+            io::stdin()
+                .read_line(&mut input)
+                .expect("Failed to read line");
+
             if dead_rx.try_recv().is_ok() {
                 return Err(anyhow!("Chat connection closed"));
             }
-            if last_draw.elapsed() > Duration::from_millis(40) {
-                last_draw = Instant::now();
-                terminal.draw(|frame| {
-                    ui(
-                        frame,
-                        self.focus,
-                        self.state.clone(),
-                        &mut self.chat_history,
-                        &self.input,
-                    )
-                })?;
-            }
-            if !event::poll(Duration::from_millis(40))? {
-                continue;
-            }
-            if input_delay.len() == 3 {
-                input_delay.pop_front();
-            }
-            input_delay.push_back(last_input.elapsed());
-            last_input = Instant::now();
-            match state {
-                AppState::Exit => {
-                    return Ok(());
+
+            self.input.insert_str(input);
+
+            let last_generation_done = {
+                let scrollback = self.chat_history.messages.lock().unwrap();
+                if let Some(last_msg) = scrollback.last() {
+                    last_msg.finalized
+                } else {
+                    true
                 }
-                AppState::ReviewDiff(_) => match event::read()? {
-                    Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
-                        KeyCode::Char('y') => {
-                            commit(&self.repo_path)?;
-                            // TODO: run in background?
-                            // self.client
-                            //     .post(&format!(
-                            //         "/projects/{}/features/{}/chat/accepted",
-                            //         self.project.id, self.feature.id
-                            //     ))
-                            //     .json(api::GenerationAcceptedRequest {
-                            //         message_id: message_id,
-                            //         accepted: true,
-                            //     })
-                            //     .send()
-                            //     .await?
-                            //     .error_body_for_status()
-                            //     .await?;
-                            let mut state = self.state.lock().unwrap();
-                            *state = AppState::Chat;
-                        }
-                        KeyCode::Char('n') | KeyCode::Esc => {
-                            revert(&self.repo_path)?;
-                            // self.client
-                            //     .post(&format!(
-                            //         "/projects/{}/features/{}/chat/accepted",
-                            //         self.project.id, self.feature.id
-                            //     ))
-                            //     .json(api::GenerationAcceptedRequest {
-                            //         message_id: message_id,
-                            //         accepted: false,
-                            //     })
-                            //     .send()
-                            //     .await?
-                            //     .error_body_for_status()
-                            //     .await?;
-                            let mut state = self.state.lock().unwrap();
-                            *state = AppState::Chat;
-                        }
-                        KeyCode::Char(' ') => {
-                            let mut state = self.state.lock().unwrap();
-                            if let AppState::ReviewDiff(diff_widget) = &mut *state {
-                                diff_widget.scroll_position = diff_widget
-                                    .scroll_position
-                                    .saturating_add(10)
-                                    .clamp(0, diff_widget.scroll_max);
-                                diff_widget.scroll_state = diff_widget
-                                    .scroll_state
-                                    .position(diff_widget.scroll_position);
-                            }
-                        }
-                        KeyCode::Down => {
-                            let mut state = self.state.lock().unwrap();
-                            if let AppState::ReviewDiff(diff_widget) = &mut *state {
-                                diff_widget.scroll_position = diff_widget
-                                    .scroll_position
-                                    .saturating_add(1)
-                                    .clamp(0, diff_widget.scroll_max);
-                                diff_widget.scroll_state = diff_widget
-                                    .scroll_state
-                                    .position(diff_widget.scroll_position);
-                            }
-                        }
-                        KeyCode::Up => {
-                            let mut state = self.state.lock().unwrap();
-                            if let AppState::ReviewDiff(diff_widget) = &mut *state {
-                                diff_widget.scroll_position = diff_widget
-                                    .scroll_position
-                                    .saturating_sub(1)
-                                    .clamp(0, diff_widget.scroll_max);
-                                diff_widget.scroll_state = diff_widget
-                                    .scroll_state
-                                    .position(diff_widget.scroll_position);
-                            }
-                        }
-                        _ => {}
-                    },
-                    Event::Mouse(mouse) => match mouse.kind {
-                        event::MouseEventKind::ScrollUp => {
-                            // TODO: if cursor row within message field, self.input.scroll instead
-                            let mut state = self.state.lock().unwrap();
-                            if let AppState::ReviewDiff(diff_widget) = &mut *state {
-                                diff_widget.scroll_position = diff_widget
-                                    .scroll_position
-                                    .saturating_sub(1)
-                                    .clamp(0, diff_widget.scroll_max);
-                                diff_widget.scroll_state = diff_widget
-                                    .scroll_state
-                                    .position(diff_widget.scroll_position);
-                            }
-                        }
-                        event::MouseEventKind::ScrollDown => {
-                            let mut state = self.state.lock().unwrap();
-                            if let AppState::ReviewDiff(diff_widget) = &mut *state {
-                                diff_widget.scroll_position = diff_widget
-                                    .scroll_position
-                                    .saturating_add(1)
-                                    .clamp(0, diff_widget.scroll_max);
-                                diff_widget.scroll_state = diff_widget
-                                    .scroll_state
-                                    .position(diff_widget.scroll_position);
-                            }
-                        }
-                        _ => {}
-                    },
-                    _ => {}
-                },
-                AppState::Help => {
-                    if let Event::Key(_) = event::read()? {
-                        let mut state = self.state.lock().unwrap();
-                        *state = AppState::Chat;
-                    }
-                }
-                AppState::Chat => match event::read()? {
-                    Event::FocusGained => {
-                        self.focus = true;
-                    }
-                    Event::FocusLost => {
-                        self.focus = false;
-                    }
-                    Event::Mouse(mouse) => match mouse.kind {
-                        event::MouseEventKind::ScrollUp => {
-                            self.chat_history.scroll_position =
-                                self.chat_history.scroll_position.saturating_sub(1);
-                            self.chat_history.scroll_state = self
-                                .chat_history
-                                .scroll_state
-                                .position(self.chat_history.scroll_position);
-                        }
-                        event::MouseEventKind::ScrollDown => {
-                            self.chat_history.scroll_position = self
-                                .chat_history
-                                .scroll_position
-                                .saturating_add(1)
-                                .clamp(0, self.chat_history.scroll_max);
-                            self.chat_history.scroll_state = self
-                                .chat_history
-                                .scroll_state
-                                .position(self.chat_history.scroll_position);
-                        }
-                        /*
-                        event::MouseEventKind::Down(btn) if btn == MouseButton::Left => {
-                            let col = mouse.column as usize - 2; // border + padding
-                            let row = mouse.row as usize - 2 + self.chat_history.scroll_position;
-                            self.chat_history.selection = Some(((col, row), (col, row)));
-                        }
-                        event::MouseEventKind::Drag(btn) if btn == MouseButton::Left => {
-                            let col = mouse.column as usize - 2;
-                            let row = mouse.row as usize - 2 + self.chat_history.scroll_position;
-                            if let Some((start, _)) = self.chat_history.selection {
-                                self.chat_history.selection = Some((start, (col, row)));
-                            } else {
-                                // dont think this should happen
-                                self.chat_history.selection = Some(((col, row), (col, row)));
-                            }
-                        }
-                        */
-                        event::MouseEventKind::Up(btn) if btn == MouseButton::Left => {
-                            // Only expand when not dragging/making a selection
-                            /*
-                            if let Some((start, end)) = self.chat_history.selection {
-                                if start == end {
-                                    self.chat_history.selection = None;
-                            */
-                            let mut messages = self.chat_history.messages.lock().unwrap();
-                            let code_blocks = messages.iter_mut().flat_map(|msg| {
-                                msg.blocks.iter_mut().filter_map(|block| match block {
-                                    MessageBlock::Code(code) => Some(code),
-                                    _ => None,
-                                })
-                            });
-                            for ((start, end), block) in self
-                                .chat_history
-                                .code_block_hitboxes
-                                .iter()
-                                .zip(code_blocks)
-                            {
-                                // -1 for the border of chat history
-                                if (*start as isize - self.chat_history.scroll_position as isize)
-                                    <= (mouse.row as isize) - 1
-                                    && (*end as isize - self.chat_history.scroll_position as isize)
-                                        > (mouse.row as isize) - 1
-                                {
-                                    block.folded = !block.folded;
-                                }
-                            }
-                            /*
-                                                           }
-                                                       }
-                            */
-                        }
-                        _ => {}
-                    },
-                    Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
-                        /*
-                        KeyCode::Char('c')
-                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-                        {
-                            dbg!("copy");
-                        } */
-                        KeyCode::Char('d')
-                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-                        {
-                            let mut state = self.state.lock().unwrap();
-                            *state = AppState::Exit;
-                        }
-                        KeyCode::Esc => {
-                            let mut state = self.state.lock().unwrap();
-                            *state = AppState::Exit;
-                        }
-                        KeyCode::Enter => {
-                            // ALT+enter for manual newlines
-                            // or if this is a paste (in which case input delay is very short)
-                            if key.modifiers.contains(event::KeyModifiers::ALT)
-                                || input_delay.iter().all(|d| d < &Duration::from_millis(1))
-                            {
-                                self.input.input(key);
-                            } else {
-                                let last_generation_done = {
-                                    let scrollback = self.chat_history.messages.lock().unwrap();
-                                    if let Some(last_msg) = scrollback.last() {
-                                        last_msg.finalized
-                                    } else {
-                                        true
-                                    }
-                                };
-                                if last_generation_done {
-                                    self.handle_chat_input(&mut write).await?;
-                                }
-                            }
-                        }
-                        _ => {
-                            // TODO: shift-enter for newlines?
-                            self.input.input(key);
-                        }
-                    },
-                    _ => (),
-                },
+            };
+
+            if last_generation_done {
+                self.handle_chat_input(&mut write).await?;
             }
         }
     }
