@@ -144,11 +144,11 @@ async fn confirm(prompt: impl Into<String>, default: bool) -> Result<bool> {
 
 fn github_app_url(api_url: &Url) -> &'static str {
     match api_url.host_str() {
-        Some("localhost") => "https://github.com/apps/bismuth-cloud-dev/installations/new",
+        Some("localhost") => "https://github.com/apps/bismuthdev-dev/installations/new",
         Some("api-staging.bismuth.cloud") => {
-            "https://github.com/apps/bismuth-cloud-staging/installations/new"
+            "https://github.com/apps/bismuthdev-staging/installations/new"
         }
-        _ => "https://github.com/apps/bismuth-cloud/installations/new",
+        _ => "https://github.com/apps/bismuthdev/installations/new",
     }
 }
 
