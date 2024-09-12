@@ -142,6 +142,17 @@ async fn confirm(prompt: impl Into<String>, default: bool) -> Result<bool> {
     return Ok(confirm == "y");
 }
 
+async fn press_any_key() -> Result<()> {
+    std::io::stdout().flush()?;
+    let termios = termios::Termios::from_fd(0).unwrap();
+    let mut new_termios = termios.clone();
+    new_termios.c_lflag &= !(termios::ICANON | termios::ECHO);
+    termios::tcsetattr(0, termios::TCSANOW, &mut new_termios).unwrap();
+    tokio::io::stdin().read(&mut [0]).await?;
+    termios::tcsetattr(0, termios::TCSANOW, &termios).unwrap();
+    Ok(())
+}
+
 fn github_app_url(api_url: &Url) -> &'static str {
     match api_url.host_str() {
         Some("localhost") => "https://github.com/apps/bismuthdev-dev/installations/new",
@@ -213,6 +224,7 @@ fn set_bismuth_remote(repo: &Path, project: &api::Project) -> Result<()> {
         .api_url
         .clone()
         .join(&format!("/git/{}", project.hash))?;
+    git_url.set_username("git").unwrap();
     git_url.set_password(Some(&project.clone_token)).unwrap();
 
     let git_repo = git2::Repository::open(repo)?;
@@ -318,8 +330,9 @@ async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Resul
                             .iter()
                             .any(|r| r.repo.to_lowercase() == gh_repo_name)
                     {
+                        let orig_gh_repos = gh_repos.clone();
                         println!("Press any key to open the installation page.");
-                        tokio::io::stdin().read(&mut [0]).await?;
+                        press_any_key().await?;
                         open::that_detached(github_app_url(&client.base_url))?;
                         print!("Waiting for app install");
                         std::io::stdout().flush()?;
@@ -335,10 +348,11 @@ async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Resul
                                 .await?
                                 .json::<Vec<api::GitHubRepo>>()
                                 .await?;
-                            if !gh_repos.is_empty() {
+                            if gh_repos != orig_gh_repos {
                                 break;
                             }
                         }
+                        println!();
                     }
                     let mut gh_repo = gh_repos
                         .iter()
@@ -411,7 +425,7 @@ async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Resul
         if gh_repos.is_empty() {
             println!("You'll need to install the GitHub App first.");
             println!("Press any key to open the installation page.");
-            tokio::io::stdin().read(&mut [0]).await?;
+            press_any_key().await?;
             open::that_detached(github_app_url(&client.base_url))?;
             print!("Waiting for app install");
             std::io::stdout().flush()?;
@@ -929,7 +943,7 @@ async fn main() -> Result<()> {
             }
             cli::ProjectCommand::Link { project } => {
                 let project = resolve_project_id(&client, project).await?;
-                let gh_orgs: Vec<api::GitHubAppInstall> = client
+                let mut gh_orgs: Vec<api::GitHubAppInstall> = client
                     .get("/projects/connect/github/organizations")
                     .send()
                     .await?
@@ -938,10 +952,28 @@ async fn main() -> Result<()> {
                     .json()
                     .await?;
                 if gh_orgs.is_empty() {
-                    // TODO: wait for link
                     println!("You'll need to install the GitHub app first.");
-                    println!("Go to {} to install it.", github_app_url(&client.base_url));
-                    return Ok(());
+                    println!("Press any key to open the installation page.");
+                    press_any_key().await?;
+                    open::that_detached(github_app_url(&client.base_url))?;
+                    print!("Waiting for app install");
+                    std::io::stdout().flush()?;
+                    loop {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        print!(".");
+                        std::io::stdout().flush()?;
+                        gh_orgs = client
+                            .get("/projects/connect/github/organizations")
+                            .send()
+                            .await?
+                            .error_body_for_status()
+                            .await?
+                            .json::<Vec<api::GitHubAppInstall>>()
+                            .await?;
+                        if !gh_orgs.is_empty() {
+                            break;
+                        }
+                    }
                 }
                 let gh_org = choice(&gh_orgs, "organization").await?;
                 let updated_project: api::Project = client

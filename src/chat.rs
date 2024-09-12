@@ -106,7 +106,10 @@ fn process_chat_message(
     let tree = repo.find_tree(tree_id)?;
     let head = repo.head()?;
     let parent_commit = repo.find_commit(head.target().unwrap())?;
-    let signature = git2::Signature::now("Bismuth-Temp", "committer@app.bismuth.cloud")?;
+    let signature = git2::Signature::now(
+        "bismuthdev[bot]",
+        "bismuthdev[bot]@users.noreply.github.com",
+    )?;
     repo.commit(
         Some("HEAD"),
         &signature,
@@ -178,7 +181,10 @@ fn commit(repo_path: &Path) -> Result<()> {
     let head = repo.head()?;
     let parent_commit = repo.find_commit(head.target().unwrap())?;
 
-    let signature = git2::Signature::now("Bismuth", "committer@app.bismuth.cloud")?;
+    let signature = git2::Signature::now(
+        "bismuthdev[bot]",
+        "bismuthdev[bot]@users.noreply.github.com",
+    )?;
 
     let diff = repo.diff_tree_to_index(Some(&parent_commit.tree()?), Some(&index), None)?;
     let mut changed_files = vec![];
