@@ -851,6 +851,13 @@ async fn check_version() -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Cli::parse();
+
+    if args.markdown_help {
+        clap_markdown::print_help_markdown::<Cli>();
+
+        return Ok(());
+    }
+
     GLOBAL_OPTS.set(args.global.clone()).unwrap();
 
     env_logger::Builder::new()

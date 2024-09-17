@@ -6,6 +6,9 @@ use url::Url;
 /// The CLI for Bismuth Cloud
 #[derive(Debug, Parser)]
 pub struct Cli {
+    #[arg(long, hide = true)]
+    pub markdown_help: bool,
+
     #[clap(flatten)]
     pub global: GlobalOpts,
 
