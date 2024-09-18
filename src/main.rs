@@ -931,7 +931,7 @@ async fn main() -> Result<()> {
                 Ok(())
             }
             cli::ProjectCommand::Create { name } => {
-                client
+                let project: api::Project = client
                     .post("/projects")
                     .json(&api::CreateProjectRequest::Name(api::CreateProjectRepo {
                         name: name.clone(),
@@ -939,7 +939,10 @@ async fn main() -> Result<()> {
                     .send()
                     .await?
                     .error_body_for_status()
+                    .await?
+                    .json()
                     .await?;
+                project_clone(&project, None)?;
                 Ok(())
             }
             cli::ProjectCommand::Import(source) => project_import(source, &client).await,
