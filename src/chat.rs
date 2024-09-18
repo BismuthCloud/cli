@@ -792,9 +792,9 @@ impl App {
                                     if !diff.is_empty() {
                                         commit(&repo_path).expect("Expected repo to be commited.");
                                     }
-
                                     exit(0);
                                 }
+                                exit(123);
                             }
                         }
                     }
@@ -862,42 +862,6 @@ impl App {
             return Ok(());
         }
         let input = self.input.lines().to_vec().join("\n");
-        if input.starts_with('/') {
-            match input.as_str() {
-                "/exit" | "/quit" => {
-                    let mut state = self.state.lock().unwrap();
-                    *state = AppState::Exit;
-                }
-                "/help" => {
-                    let mut state = self.state.lock().unwrap();
-                    *state = AppState::Help;
-                }
-                "/docs" => {
-                    open::that_detached("https://app.bismuth.cloud/docs")?;
-                }
-                // eh idk if we want this, seems like a good way to lose things even with the name check
-                "/undo" => {
-                    let repo = git2::Repository::open(&self.repo_path)?;
-                    let last = repo.revparse_single("HEAD~1")?;
-                    if last.peel_to_commit()?.author().name().unwrap() == "Bismuth" {
-                        repo.reset(
-                            &repo.revparse_single("HEAD~1")?,
-                            git2::ResetType::Hard,
-                            Some(git2::build::CheckoutBuilder::new().force()),
-                        )?;
-                    }
-                }
-                _ => {
-                    let mut scrollback = self.chat_history.messages.lock().unwrap();
-                    scrollback.push(ChatMessage::new(
-                        ChatMessageUser::AI,
-                        "I'm sorry, I don't understand that command.",
-                    ));
-                }
-            }
-            self.clear_input();
-            return Ok(());
-        }
 
         {
             let mut scrollback = self.chat_history.messages.lock().unwrap();

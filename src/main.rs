@@ -213,6 +213,7 @@ fn set_bismuth_remote(repo: &Path, project: &api::Project) -> Result<()> {
         .api_url
         .clone()
         .join(&format!("/git/{}", project.hash))?;
+    git_url.set_username("git").unwrap();
     git_url.set_password(Some(&project.clone_token)).unwrap();
 
     let git_repo = git2::Repository::open(repo)?;
@@ -299,6 +300,7 @@ async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Resul
         }
 
         let git_repo = git2::Repository::open(repo.as_path())?;
+        /*
         if let Ok(remote) = git_repo.find_remote("origin") {
             let remote_url = remote.url().unwrap().to_string();
             if remote_url.contains("github.com") {
@@ -362,6 +364,7 @@ async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Resul
                 }
             }
         }
+        */
 
         let project: api::Project = client
             .post("/projects")
@@ -384,7 +387,6 @@ async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Resul
             .arg("push")
             .arg("--force")
             .arg("bismuth")
-            .arg("--all")
             .stdout(std::process::Stdio::inherit())
             .stderr(std::process::Stdio::inherit())
             .output()
