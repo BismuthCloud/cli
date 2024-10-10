@@ -33,6 +33,7 @@ use crate::{
 fn websocket_url(api_url: &Url) -> &'static str {
     match api_url.host_str() {
         Some("localhost") => "ws://localhost:8765",
+        Some("127.0.0.1") => "ws://localhost:8766",
         Some("api-staging.bismuth.cloud") => "wss://chat-staging.bismuth.cloud",
         _ => "wss://chat.bismuth.cloud",
     }
