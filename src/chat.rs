@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
-use futures::{SinkExt, StreamExt, TryStreamExt};
+use futures::{stream::SplitSink, SinkExt, StreamExt, TryStreamExt};
 use log::{debug, trace};
 use ratatui::{
     crossterm::{
@@ -21,7 +21,6 @@ use ratatui::{
 };
 use syntect::easy::HighlightLines;
 use syntect::util::LinesWithEndings;
-use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use url::Url;
 
@@ -703,22 +702,12 @@ impl App {
     async fn run(&mut self) -> Result<()> {
         let mut terminal = terminal::init()?;
 
-        let (mut write_sink, mut read) = self.ws_stream.take().unwrap().split();
+        let (mut write, mut read) = self.ws_stream.take().unwrap().split();
         let (dead_tx, mut dead_rx) = tokio::sync::oneshot::channel();
-
-        let (write, mut write_source) = mpsc::channel(1);
-
-        tokio::spawn(async move {
-            while let Some(msg) = write_source.recv().await {
-                write_sink.send(msg).await.unwrap();
-            }
-            write_sink.close().await.unwrap();
-        });
 
         let scrollback = self.chat_history.messages.clone();
         let repo_path = self.repo_path.clone();
         let state = self.state.clone();
-        let write_ = write.clone();
         tokio::spawn(async move {
             loop {
                 let message = match read.try_next().await {
@@ -731,10 +720,7 @@ impl App {
                     Ok(Some(message)) => message,
                 };
                 if let Message::Ping(_) = message {
-                    write_
-                        .send(Message::Pong(Default::default()))
-                        .await
-                        .unwrap();
+                    // todo: split/clone write so we can get a copy of it here and directly send a pong
                     continue;
                 }
                 if let Message::Close(_) = message {
@@ -846,6 +832,7 @@ impl App {
         loop {
             let state = { self.state.lock().unwrap().clone() };
             if let AppState::Exit = state {
+                write.close().await?;
                 return Ok(());
             }
             if dead_rx.try_recv().is_ok() {
@@ -1102,7 +1089,7 @@ impl App {
                                     }
                                 };
                                 if last_generation_done {
-                                    self.handle_chat_input(&write).await?;
+                                    self.handle_chat_input(&mut write).await?;
                                 }
                             }
                         }
@@ -1119,7 +1106,12 @@ impl App {
 
     async fn handle_chat_input(
         &mut self,
-        write: &mpsc::Sender<tokio_tungstenite::tungstenite::Message>,
+        write: &mut SplitSink<
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+            Message,
+        >,
     ) -> Result<()> {
         if self.input.is_empty() {
             return Ok(());
