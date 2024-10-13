@@ -743,6 +743,10 @@ impl App {
                         match stuff {
                             api::ws::ChatMessageBody::StreamingToken { token, .. } => {
                                 let mut scrollback = scrollback.lock().unwrap();
+                                // Daneel snapshot resumption
+                                if (scrollback.len() == 0) {
+                                    scrollback.push(ChatMessage::new(ChatMessageUser::AI, ""));
+                                }
                                 let last_msg = scrollback.last_mut().unwrap();
                                 let mut new_raw = last_msg.raw.clone() + &token.text;
                                 new_raw = new_raw.replace("\n<BCODE>\n", "\n");
@@ -782,8 +786,14 @@ impl App {
                                     .replace("\n<BCODE>\n", "\n")
                                     .replace("\n</BCODE>\n", "\n");
                                 let mut scrollback = scrollback.lock().unwrap();
-                                let last = scrollback.last_mut().unwrap();
-                                *last = ChatMessage::new(ChatMessageUser::AI, &partial_message);
+                                let msg = ChatMessage::new(ChatMessageUser::AI, &partial_message);
+                                // Basically just to support snapshot resumption in daneel
+                                if (scrollback.len() > 0) {
+                                    let last = scrollback.last_mut().unwrap();
+                                    *last = msg;
+                                } else {
+                                    scrollback.push(msg);
+                                }
                             }
                             api::ws::ChatMessageBody::FinalizedMessage {
                                 generated_text,

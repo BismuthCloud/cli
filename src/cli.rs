@@ -223,7 +223,7 @@ pub enum FeatureCommand {
         #[clap(subcommand)]
         command: FeatureConfigCommand,
     },
-    /// Deploy a feature to the cloud
+    /// Deploy project/feature to the cloud
     Deploy {
         #[clap(flatten)]
         feature: FeatureRef,
