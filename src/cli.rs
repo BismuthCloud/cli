@@ -104,6 +104,11 @@ pub enum Command {
     Login,
     /// Show the CLI version
     Version,
+    /// Configure the CLI
+    Configure {
+        #[clap(subcommand)]
+        command: ConfigureCommand,
+    },
     /// Manage projects
     Project {
         #[clap(subcommand)]
@@ -178,6 +183,15 @@ pub enum Command {
         /// The project/feature to work on.
         /// If not specified, attempt to find based on the provided (or current) directory.
         feature: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigureCommand {
+    LLMAPIKey {
+        /// Set your Anthropic API key.
+        /// Required to use chat on free tier.
+        key: String,
     },
 }
 

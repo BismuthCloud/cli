@@ -3,9 +3,23 @@ use std::fmt::Display;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SubscriptionType {
+    Free,
+    Team,
+    Ent,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct Subscription {
+    pub r#type: SubscriptionType,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 pub struct Organization {
     pub id: u64,
     pub name: String,
+    pub subscription: Subscription,
 }
 
 impl Display for Organization {
@@ -123,6 +137,12 @@ pub struct ChatMessage {
 pub struct GenerationAcceptedRequest {
     pub message_id: u64,
     pub accepted: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LLMConfigurationRequest {
+    pub key: String,
 }
 
 pub mod ws {

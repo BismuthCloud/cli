@@ -25,7 +25,7 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use url::Url;
 
 use crate::{
-    api::{self, ws::ChatModifiedFile},
+    api::{self, ws::ChatModifiedFile, Organization, SubscriptionType},
     APIClient, ResponseErrorExt as _,
 };
 

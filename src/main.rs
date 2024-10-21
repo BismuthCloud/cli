@@ -916,6 +916,20 @@ async fn main() -> Result<()> {
     )?;
 
     match &args.command {
+        cli::Command::Configure { command } => match command {
+            cli::ConfigureCommand::LLMAPIKey { key } => {
+                client
+                    .post("/llm-configuration")
+                    .json(&api::LLMConfigurationRequest {
+                        key: key.to_string(),
+                    })
+                    .send()
+                    .await?
+                    .error_body_for_status()
+                    .await?;
+                Ok(())
+            }
+        },
         cli::Command::Project { command } => match command {
             cli::ProjectCommand::List => {
                 let get_projects = client
