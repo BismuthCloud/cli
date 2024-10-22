@@ -722,7 +722,6 @@ impl App {
                 Ok(Some(message)) => message,
             };
             if let Message::Ping(_) = message {
-                // todo: split/clone write so we can get a copy of it here and directly send a pong
                 continue;
             }
             if let Message::Close(_) = message {
