@@ -7,7 +7,10 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
-use futures::{stream::SplitSink, SinkExt, StreamExt, TryStreamExt};
+use futures::{
+    stream::{SplitSink, SplitStream},
+    SinkExt, StreamExt, TryStreamExt,
+};
 use log::{debug, trace};
 use ratatui::{
     crossterm::{
@@ -21,7 +24,10 @@ use ratatui::{
 };
 use syntect::easy::HighlightLines;
 use syntect::util::LinesWithEndings;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio::net::TcpStream;
+use tokio_tungstenite::{
+    connect_async, tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream,
+};
 use url::Url;
 
 use crate::{
@@ -699,6 +705,138 @@ impl App {
         self.input.set_cursor_line_style(Style::default());
     }
 
+    async fn read_loop(
+        read: &mut SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+        scrollback: Arc<Mutex<Vec<ChatMessage>>>,
+        repo_path: &Path,
+        state: Arc<Mutex<AppState>>,
+    ) -> Result<()> {
+        loop {
+            let message = match read.try_next().await {
+                Err(e) => {
+                    return Err(e.into());
+                }
+                Ok(None) => {
+                    return Ok(());
+                }
+                Ok(Some(message)) => message,
+            };
+            if let Message::Ping(_) = message {
+                // todo: split/clone write so we can get a copy of it here and directly send a pong
+                continue;
+            }
+            if let Message::Close(_) = message {
+                return Ok(());
+            }
+            let data: api::ws::Message =
+                serde_json::from_str(&message.into_text().unwrap()).unwrap();
+            match data {
+                api::ws::Message::Chat(api::ws::ChatMessage { message, .. }) => {
+                    let stuff: api::ws::ChatMessageBody = serde_json::from_str(&message).unwrap();
+                    match stuff {
+                        api::ws::ChatMessageBody::StreamingToken { token, .. } => {
+                            let mut scrollback = scrollback.lock().unwrap();
+                            // Daneel snapshot resumption
+                            if (scrollback.len() == 0) {
+                                scrollback.push(ChatMessage::new(ChatMessageUser::AI, ""));
+                            }
+                            let last_msg = scrollback.last_mut().unwrap();
+                            let mut new_raw = last_msg.raw.clone() + &token.text;
+                            new_raw = new_raw.replace("\n<BCODE>\n", "\n");
+                            *last_msg = ChatMessage::new(last_msg.user.clone(), &new_raw);
+                            // let nblocks = last_msg.blocks.len();
+                            // let last_block = last_msg.blocks.last_mut().unwrap();
+                            // match last_block {
+                            //     MessageBlock::Text(lines) => {
+                            //         if lines.len() > 0 {
+                            //             lines
+                            //                 .last_mut();
+                            //                 .unwrap()
+                            //                 .spans
+                            //                 .push(Span::raw(token.text));
+                            //             // TODO: trim off ```python ?
+                            //         } else {
+                            //             lines.push(Line::from(vec![Span::raw(token.text)]));
+                            //         }
+                            //     }
+                            //     MessageBlock::Thinking => {
+                            //         if nblocks == 1 {
+                            //             // Replace the entire message so we get the Bismuth: prefix back
+                            //             *last_msg =
+                            //                 ChatMessage::new(ChatMessageUser::AI, &token.text);
+                            //         } else {
+                            //             // Otherwise just replace this thinking block
+                            //             *last_block = MessageBlock::new_text(&token.text);
+                            //         }
+                            //     }
+                            //     _ => {
+                            //         last_msg.blocks.push(MessageBlock::new_text(&token.text));
+                            //     }
+                            // }
+                        }
+                        api::ws::ChatMessageBody::PartialMessage { partial_message } => {
+                            let partial_message = partial_message
+                                .replace("\n<BCODE>\n", "\n")
+                                .replace("\n</BCODE>\n", "\n");
+                            let mut scrollback = scrollback.lock().unwrap();
+                            let msg = ChatMessage::new(ChatMessageUser::AI, &partial_message);
+                            // Basically just to support snapshot resumption in daneel
+                            if (scrollback.len() > 0) {
+                                let last = scrollback.last_mut().unwrap();
+                                *last = msg;
+                            } else {
+                                scrollback.push(msg);
+                            }
+                        }
+                        api::ws::ChatMessageBody::FinalizedMessage {
+                            generated_text,
+                            output_modified_files,
+                            ..
+                        } => {
+                            {
+                                let mut scrollback = scrollback.lock().unwrap();
+                                let last = scrollback.last_mut().unwrap();
+                                let generated_text = generated_text
+                                    .replace("\n<BCODE>\n", "\n")
+                                    .replace("\n</BCODE>\n", "\n");
+                                *last = ChatMessage::new(ChatMessageUser::AI, &generated_text);
+                                last.finalized = true;
+                            }
+
+                            if let Some(diff) =
+                                process_chat_message(&repo_path, &output_modified_files).unwrap()
+                            {
+                                if !diff.is_empty() {
+                                    let mut state = state.lock().unwrap();
+                                    *state = AppState::ReviewDiff(DiffReviewWidget::new(diff));
+                                }
+                            }
+                        }
+                    }
+                }
+                api::ws::Message::ResponseState(resp) => {
+                    let mut scrollback = scrollback.lock().unwrap();
+                    let last = scrollback.last_mut().unwrap();
+                    // sorta hacky, but if the last block is code when we start thinking
+                    // remove it as it's a small partial message
+                    if let Some(MessageBlock::Code(_)) = last.blocks.last() {
+                        last.blocks.pop();
+                    }
+                    if let Some(MessageBlock::Thinking(_)) = last.blocks.last() {
+                        *last.blocks.last_mut().unwrap() =
+                            MessageBlock::Thinking(resp.state.clone());
+                    } else {
+                        last.blocks.push(MessageBlock::Thinking(resp.state.clone()));
+                    }
+                }
+                api::ws::Message::Error(err) => {
+                    return Err(anyhow!(err));
+                }
+                _ => {}
+            }
+        }
+    }
+
     async fn run(&mut self) -> Result<()> {
         let mut terminal = terminal::init()?;
 
@@ -709,131 +847,8 @@ impl App {
         let repo_path = self.repo_path.clone();
         let state = self.state.clone();
         tokio::spawn(async move {
-            loop {
-                let message = match read.try_next().await {
-                    Err(_) => {
-                        break;
-                    }
-                    Ok(None) => {
-                        break;
-                    }
-                    Ok(Some(message)) => message,
-                };
-                if let Message::Ping(_) = message {
-                    // todo: split/clone write so we can get a copy of it here and directly send a pong
-                    continue;
-                }
-                if let Message::Close(_) = message {
-                    return;
-                }
-                let scrollback = scrollback.clone();
-                let data: api::ws::Message =
-                    serde_json::from_str(&message.into_text().unwrap()).unwrap();
-                match data {
-                    api::ws::Message::Chat(api::ws::ChatMessage { message, .. }) => {
-                        let stuff: api::ws::ChatMessageBody =
-                            serde_json::from_str(&message).unwrap();
-                        match stuff {
-                            api::ws::ChatMessageBody::StreamingToken { token, .. } => {
-                                let mut scrollback = scrollback.lock().unwrap();
-                                // Daneel snapshot resumption
-                                if (scrollback.len() == 0) {
-                                    scrollback.push(ChatMessage::new(ChatMessageUser::AI, ""));
-                                }
-                                let last_msg = scrollback.last_mut().unwrap();
-                                let mut new_raw = last_msg.raw.clone() + &token.text;
-                                new_raw = new_raw.replace("\n<BCODE>\n", "\n");
-                                *last_msg = ChatMessage::new(last_msg.user.clone(), &new_raw);
-                                // let nblocks = last_msg.blocks.len();
-                                // let last_block = last_msg.blocks.last_mut().unwrap();
-                                // match last_block {
-                                //     MessageBlock::Text(lines) => {
-                                //         if lines.len() > 0 {
-                                //             lines
-                                //                 .last_mut();
-                                //                 .unwrap()
-                                //                 .spans
-                                //                 .push(Span::raw(token.text));
-                                //             // TODO: trim off ```python ?
-                                //         } else {
-                                //             lines.push(Line::from(vec![Span::raw(token.text)]));
-                                //         }
-                                //     }
-                                //     MessageBlock::Thinking => {
-                                //         if nblocks == 1 {
-                                //             // Replace the entire message so we get the Bismuth: prefix back
-                                //             *last_msg =
-                                //                 ChatMessage::new(ChatMessageUser::AI, &token.text);
-                                //         } else {
-                                //             // Otherwise just replace this thinking block
-                                //             *last_block = MessageBlock::new_text(&token.text);
-                                //         }
-                                //     }
-                                //     _ => {
-                                //         last_msg.blocks.push(MessageBlock::new_text(&token.text));
-                                //     }
-                                // }
-                            }
-                            api::ws::ChatMessageBody::PartialMessage { partial_message } => {
-                                let partial_message = partial_message
-                                    .replace("\n<BCODE>\n", "\n")
-                                    .replace("\n</BCODE>\n", "\n");
-                                let mut scrollback = scrollback.lock().unwrap();
-                                let msg = ChatMessage::new(ChatMessageUser::AI, &partial_message);
-                                // Basically just to support snapshot resumption in daneel
-                                if (scrollback.len() > 0) {
-                                    let last = scrollback.last_mut().unwrap();
-                                    *last = msg;
-                                } else {
-                                    scrollback.push(msg);
-                                }
-                            }
-                            api::ws::ChatMessageBody::FinalizedMessage {
-                                generated_text,
-                                output_modified_files,
-                                ..
-                            } => {
-                                {
-                                    let mut scrollback = scrollback.lock().unwrap();
-                                    let last = scrollback.last_mut().unwrap();
-                                    let generated_text = generated_text
-                                        .replace("\n<BCODE>\n", "\n")
-                                        .replace("\n</BCODE>\n", "\n");
-                                    *last = ChatMessage::new(ChatMessageUser::AI, &generated_text);
-                                    last.finalized = true;
-                                }
-
-                                if let Some(diff) =
-                                    process_chat_message(&repo_path, &output_modified_files)
-                                        .unwrap()
-                                {
-                                    if !diff.is_empty() {
-                                        let mut state = state.lock().unwrap();
-                                        *state = AppState::ReviewDiff(DiffReviewWidget::new(diff));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    api::ws::Message::ResponseState(resp) => {
-                        let mut scrollback = scrollback.lock().unwrap();
-                        let last = scrollback.last_mut().unwrap();
-                        // sorta hacky, but if the last block is code when we start thinking
-                        // remove it as it's a small partial message
-                        if let Some(MessageBlock::Code(_)) = last.blocks.last() {
-                            last.blocks.pop();
-                        }
-                        if let Some(MessageBlock::Thinking(_)) = last.blocks.last() {
-                            *last.blocks.last_mut().unwrap() =
-                                MessageBlock::Thinking(resp.state.clone());
-                        } else {
-                            last.blocks.push(MessageBlock::Thinking(resp.state.clone()));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            dead_tx.send(()).unwrap();
+            let res = Self::read_loop(&mut read, scrollback.clone(), &repo_path, state).await;
+            dead_tx.send(res).unwrap();
         });
 
         let mut last_draw = Instant::now();
@@ -845,8 +860,8 @@ impl App {
                 write.close().await?;
                 return Ok(());
             }
-            if dead_rx.try_recv().is_ok() {
-                return Err(anyhow!("Chat connection closed"));
+            if let Ok(res) = dead_rx.try_recv() {
+                return res;
             }
             if last_draw.elapsed() > Duration::from_millis(40) {
                 last_draw = Instant::now();

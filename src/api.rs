@@ -223,6 +223,7 @@ pub mod ws {
         Ping,
         Chat(ChatMessage),
         ResponseState(ResponseStateMessage),
+        Error(String),
     }
 
     impl Serialize for Message {
@@ -283,6 +284,12 @@ pub mod ws {
                     )
                     .map_err(serde::de::Error::custom)?;
                     Ok(Message::ResponseState(state))
+                }
+                None if value.get("error").is_some() => {
+                    // Handle generic {"error": "asdf"} messages that come if the backend raises an error
+                    return Ok(Message::Error(
+                        value.get("error").unwrap().as_str().unwrap().to_string(),
+                    ));
                 }
                 _ => Err(serde::de::Error::custom("invalid message type")),
             }

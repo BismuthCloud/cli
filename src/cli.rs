@@ -188,11 +188,10 @@ pub enum Command {
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigureCommand {
-    LLMAPIKey {
-        /// Set your Anthropic API key.
-        /// Required to use chat on free tier.
-        key: String,
-    },
+    #[clap(name = "llm-api-key")]
+    /// Set your Anthropic API key.
+    /// Required to use chat on free tier.
+    LLMAPIKey {},
 }
 
 #[derive(Debug, Args)]

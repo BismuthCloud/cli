@@ -7,7 +7,7 @@ use once_cell::sync::OnceCell;
 use reqwest_eventsource::EventSource;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::Write as _;
+use std::io::{BufRead, BufReader, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Command;
@@ -95,11 +95,10 @@ where
         }
         print!("> ");
         std::io::stdout().flush()?;
-        let selector = tokio::io::BufReader::new(tokio::io::stdin())
+        let selector = std::io::stdin()
             .lines()
-            .next_line()
-            .await?
-            .unwrap_or("".to_string());
+            .next()
+            .unwrap_or(Ok("".to_string()))?;
 
         if let Ok(idx) = selector.trim().parse::<usize>() {
             if idx > things.len() {
@@ -130,11 +129,10 @@ async fn confirm(prompt: impl Into<String>, default: bool) -> Result<bool> {
         if default { "n" } else { "N" }
     );
     std::io::stdout().flush()?;
-    let confirm = tokio::io::BufReader::new(tokio::io::stdin())
+    let confirm = std::io::stdin()
         .lines()
-        .next_line()
-        .await?
-        .unwrap_or("".to_string())
+        .next()
+        .unwrap_or(Ok("".to_string()))?
         .to_lowercase();
     if confirm.is_empty() || (confirm != "y" && confirm != "n") {
         return Ok(default);
@@ -148,7 +146,7 @@ async fn press_any_key() -> Result<()> {
     let mut new_termios = termios.clone();
     new_termios.c_lflag &= !(termios::ICANON | termios::ECHO);
     termios::tcsetattr(0, termios::TCSANOW, &mut new_termios).unwrap();
-    tokio::io::stdin().read(&mut [0]).await?;
+    std::io::stdin().read(&mut [0])?;
     termios::tcsetattr(0, termios::TCSANOW, &termios).unwrap();
     Ok(())
 }
@@ -917,12 +915,17 @@ async fn main() -> Result<()> {
 
     match &args.command {
         cli::Command::Configure { command } => match command {
-            cli::ConfigureCommand::LLMAPIKey { key } => {
+            cli::ConfigureCommand::LLMAPIKey {} => {
+                print!("Enter your LLM API key: ");
+                std::io::stdout().flush()?;
+                let key = std::io::stdin()
+                    .lines()
+                    .next()
+                    .unwrap_or(Ok("".to_string()))?;
+
                 client
                     .post("/llm-configuration")
-                    .json(&api::LLMConfigurationRequest {
-                        key: key.to_string(),
-                    })
+                    .json(&api::LLMConfigurationRequest { key })
                     .send()
                     .await?
                     .error_body_for_status()
