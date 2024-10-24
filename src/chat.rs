@@ -22,6 +22,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Clear, Padding, Paragraph, Scrollbar, StatefulWidget, Widget},
 };
+use serde_json::json;
 use syntect::easy::HighlightLines;
 use syntect::util::LinesWithEndings;
 use tokio::net::TcpStream;
@@ -638,6 +639,7 @@ impl Widget for &mut DiffReviewWidget {
 enum AppState {
     Chat,
     Help,
+    SubmittedBugReport,
     Exit,
     ReviewDiff(DiffReviewWidget),
 }
@@ -890,38 +892,43 @@ impl App {
                     Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
                         KeyCode::Char('y') => {
                             commit(&self.repo_path)?;
-                            // TODO: run in background?
-                            // self.client
-                            //     .post(&format!(
-                            //         "/projects/{}/features/{}/chat/accepted",
-                            //         self.project.id, self.feature.id
-                            //     ))
-                            //     .json(api::GenerationAcceptedRequest {
-                            //         message_id: message_id,
-                            //         accepted: true,
-                            //     })
-                            //     .send()
-                            //     .await?
-                            //     .error_body_for_status()
-                            //     .await?;
+                            let client = self.client.clone();
+                            let project = self.project.id;
+                            let feature = self.feature.id;
+                            tokio::spawn(async move {
+                                let _ = client
+                                    .post(&format!(
+                                        "/projects/{}/features/{}/chat/accepted",
+                                        project, feature,
+                                    ))
+                                    .json(&api::GenerationAcceptedRequest {
+                                        message_id: 0,
+                                        accepted: true,
+                                    })
+                                    .send()
+                                    .await;
+                            });
                             let mut state = self.state.lock().unwrap();
                             *state = AppState::Chat;
                         }
                         KeyCode::Char('n') | KeyCode::Esc => {
                             revert(&self.repo_path)?;
-                            // self.client
-                            //     .post(&format!(
-                            //         "/projects/{}/features/{}/chat/accepted",
-                            //         self.project.id, self.feature.id
-                            //     ))
-                            //     .json(api::GenerationAcceptedRequest {
-                            //         message_id: message_id,
-                            //         accepted: false,
-                            //     })
-                            //     .send()
-                            //     .await?
-                            //     .error_body_for_status()
-                            //     .await?;
+                            let client = self.client.clone();
+                            let project = self.project.id;
+                            let feature = self.feature.id;
+                            tokio::spawn(async move {
+                                let _ = client
+                                    .post(&format!(
+                                        "/projects/{}/features/{}/chat/accepted",
+                                        project, feature,
+                                    ))
+                                    .json(&api::GenerationAcceptedRequest {
+                                        message_id: 0,
+                                        accepted: false,
+                                    })
+                                    .send()
+                                    .await;
+                            });
                             let mut state = self.state.lock().unwrap();
                             *state = AppState::Chat;
                         }
@@ -993,7 +1000,7 @@ impl App {
                     },
                     _ => {}
                 },
-                AppState::Help => {
+                AppState::Help | AppState::SubmittedBugReport => {
                     if let Event::Key(_) = event::read()? {
                         let mut state = self.state.lock().unwrap();
                         *state = AppState::Chat;
@@ -1142,7 +1149,7 @@ impl App {
         }
         let input = self.input.lines().to_vec().join("\n");
         if input.starts_with('/') {
-            match input.as_str() {
+            match input.split(' ').next().unwrap() {
                 "/exit" | "/quit" => {
                     let mut state = self.state.lock().unwrap();
                     *state = AppState::Exit;
@@ -1153,6 +1160,16 @@ impl App {
                 }
                 "/docs" => {
                     open::that_detached("https://app.bismuth.cloud/docs")?;
+                }
+                "/bug" => {
+                    let msg = input.split_once(' ').map(|(_, msg)| msg).unwrap_or("");
+                    self.client
+                        .post("/bugreport")
+                        .json(&json!({ "message": msg }))
+                        .send()
+                        .await?;
+                    let mut state = self.state.lock().unwrap();
+                    *state = AppState::SubmittedBugReport;
                 }
                 // eh idk if we want this, seems like a good way to lose things even with the name check
                 "/undo" => {
@@ -1323,9 +1340,20 @@ fn ui(
         AppState::Help => {
             let help_text = r#"/exit, /quit, or Esc: Exit the chat
 /docs: Open the Bismuth documentation
+/bug {description}: Report a bug
 /help: Show this help"#;
             let paragraph = Paragraph::new(help_text).block(Block::bordered().title(vec![
                 "Help ".into(),
+                Span::styled("(press any key to close)", ratatui::style::Color::Yellow),
+            ]));
+            let area = centered_paragraph(&paragraph, frame.area());
+            frame.render_widget(Clear, area);
+            frame.render_widget(paragraph, area);
+        }
+        AppState::SubmittedBugReport => {
+            let text = "Bug report submitted. Thank you!";
+            let paragraph = Paragraph::new(text).block(Block::bordered().title(vec![
+                "Confirmation ".into(),
                 Span::styled("(press any key to close)", ratatui::style::Color::Yellow),
             ]));
             let area = centered_paragraph(&paragraph, frame.area());
