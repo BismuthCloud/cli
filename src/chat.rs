@@ -7,6 +7,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
+use copypasta::ClipboardProvider;
 use futures::{
     stream::{SplitSink, SplitStream},
     SinkExt, StreamExt, TryStreamExt,
@@ -428,6 +429,8 @@ impl ChatMessage {
 
     fn format_user<'a>(user: &ChatMessageUser) -> Vec<Span<'a>> {
         vec![
+            // Copy
+            "⎘ ".into(),
             match user {
                 ChatMessageUser::AI => ratatui::text::Span::styled(
                     "Bismuth",
@@ -472,6 +475,7 @@ struct ChatHistoryWidget {
     scroll_max: usize,
     scroll_state: ratatui::widgets::ScrollbarState,
     code_block_hitboxes: Vec<(usize, usize)>,
+    message_hitboxes: Vec<(usize, usize)>,
 
     selection: Option<((usize, usize), (usize, usize))>,
 }
@@ -481,11 +485,13 @@ impl Widget for &mut ChatHistoryWidget {
         let block = Block::new()
             .title("Chat History")
             .borders(ratatui::widgets::Borders::ALL)
-            .padding(Padding::new(1, 0, 0, 0));
+            .padding(Padding::new(0, 0, 0, 0));
 
         let mut line_idx = 0;
+
         // start,end line idxs for each code block
         let mut code_block_hitboxes: Vec<(usize, usize)> = vec![];
+        let mut message_hitboxes: Vec<(usize, usize)> = vec![];
 
         let messages = self.messages.lock().unwrap();
         let lines: Vec<_> = messages
@@ -541,11 +547,12 @@ impl Widget for &mut ChatHistoryWidget {
                         // have to "simulate" line wrapping here to get an accurate line count
                         line_idx += Paragraph::new(ratatui::text::Text::from_iter(lines.clone()))
                             .wrap(ratatui::widgets::Wrap { trim: false })
-                            .line_count(area.width - 3); // -1 for each L/R border + 1 padding
+                            .line_count(area.width - 2); // -1 for each L/R border
                         lines
                     })
                     .collect();
 
+                message_hitboxes.push((line_idx - message_lines.len(), line_idx));
                 message_lines
             })
             .collect();
@@ -555,9 +562,9 @@ impl Widget for &mut ChatHistoryWidget {
             .scroll((self.scroll_position as u16, 0))
             .wrap(ratatui::widgets::Wrap { trim: false });
 
-        // -2 to account for the borders + l padding
+        // -2 to account for the borders
         // +3 so you can scroll past the bottom a bit to see this is really the end
-        let nlines = paragraph.line_count(area.width - 3) + 3;
+        let nlines = paragraph.line_count(area.width - 2) + 3;
         let old_scroll_max = self.scroll_max;
         self.scroll_max = nlines.max(area.height as usize) - (area.height as usize);
         // Auto scroll to the bottom if we were already at the bottom
@@ -567,6 +574,7 @@ impl Widget for &mut ChatHistoryWidget {
         self.scroll_state = self.scroll_state.content_length(self.scroll_max);
 
         self.code_block_hitboxes = code_block_hitboxes;
+        self.message_hitboxes = message_hitboxes;
 
         paragraph.render(area, buf);
         StatefulWidget::render(
@@ -581,15 +589,17 @@ impl Widget for &mut ChatHistoryWidget {
 #[derive(Clone, Debug)]
 struct DiffReviewWidget {
     diff: String,
+    msg_id: u64,
     scroll_position: usize,
     scroll_max: usize,
     scroll_state: ratatui::widgets::ScrollbarState,
 }
 
 impl DiffReviewWidget {
-    fn new(diff: String) -> Self {
+    fn new(diff: String, msg_id: u64) -> Self {
         Self {
             diff,
+            msg_id,
             scroll_position: 0,
             scroll_max: 0,
             scroll_state: ratatui::widgets::ScrollbarState::default(),
@@ -687,6 +697,7 @@ impl App {
                 scroll_max: 0,
                 scroll_state: ratatui::widgets::ScrollbarState::default(),
                 code_block_hitboxes: vec![],
+                message_hitboxes: vec![],
                 selection: None,
             },
             input: tui_textarea::TextArea::default(),
@@ -738,7 +749,7 @@ impl App {
                         api::ws::ChatMessageBody::StreamingToken { token, .. } => {
                             let mut scrollback = scrollback.lock().unwrap();
                             // Daneel snapshot resumption
-                            if (scrollback.len() == 0) {
+                            if scrollback.len() == 0 {
                                 scrollback.push(ChatMessage::new(ChatMessageUser::AI, ""));
                             }
                             let last_msg = scrollback.last_mut().unwrap();
@@ -792,6 +803,7 @@ impl App {
                         api::ws::ChatMessageBody::FinalizedMessage {
                             generated_text,
                             output_modified_files,
+                            id,
                             ..
                         } => {
                             {
@@ -809,7 +821,7 @@ impl App {
                             {
                                 if !diff.is_empty() {
                                     let mut state = state.lock().unwrap();
-                                    *state = AppState::ReviewDiff(DiffReviewWidget::new(diff));
+                                    *state = AppState::ReviewDiff(DiffReviewWidget::new(diff, id));
                                 }
                             }
                         }
@@ -888,13 +900,14 @@ impl App {
                 AppState::Exit => {
                     return Ok(());
                 }
-                AppState::ReviewDiff(_) => match event::read()? {
+                AppState::ReviewDiff(diff) => match event::read()? {
                     Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
                         KeyCode::Char('y') => {
                             commit(&self.repo_path)?;
                             let client = self.client.clone();
                             let project = self.project.id;
                             let feature = self.feature.id;
+                            let message_id = diff.msg_id;
                             tokio::spawn(async move {
                                 let _ = client
                                     .post(&format!(
@@ -902,7 +915,7 @@ impl App {
                                         project, feature,
                                     ))
                                     .json(&api::GenerationAcceptedRequest {
-                                        message_id: 0,
+                                        message_id,
                                         accepted: true,
                                     })
                                     .send()
@@ -916,6 +929,7 @@ impl App {
                             let client = self.client.clone();
                             let project = self.project.id;
                             let feature = self.feature.id;
+                            let message_id = diff.msg_id;
                             tokio::spawn(async move {
                                 let _ = client
                                     .post(&format!(
@@ -923,7 +937,7 @@ impl App {
                                         project, feature,
                                     ))
                                     .json(&api::GenerationAcceptedRequest {
-                                        message_id: 0,
+                                        message_id,
                                         accepted: false,
                                     })
                                     .send()
@@ -1058,12 +1072,29 @@ impl App {
                                     self.chat_history.selection = None;
                             */
                             let mut messages = self.chat_history.messages.lock().unwrap();
+                            for ((start, end), block) in self
+                                .chat_history
+                                .message_hitboxes
+                                .iter()
+                                .zip(messages.iter())
+                            {
+                                // -1 for the border of chat history
+                                if (*start as isize - self.chat_history.scroll_position as isize)
+                                    == (mouse.row as isize) - 1
+                                    && (mouse.column as usize == 1 || mouse.column as usize == 2)
+                                {
+                                    let mut ctx = copypasta::ClipboardContext::new().unwrap();
+                                    ctx.set_contents(block.raw.clone()).unwrap();
+                                }
+                            }
+
                             let code_blocks = messages.iter_mut().flat_map(|msg| {
                                 msg.blocks.iter_mut().filter_map(|block| match block {
                                     MessageBlock::Code(code) => Some(code),
                                     _ => None,
                                 })
                             });
+
                             for ((start, end), block) in self
                                 .chat_history
                                 .code_block_hitboxes
