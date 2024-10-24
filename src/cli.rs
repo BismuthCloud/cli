@@ -188,10 +188,10 @@ pub enum Command {
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigureCommand {
-    #[clap(name = "llm-api-key")]
-    /// Set your Anthropic API key.
+    #[clap(name = "openrouter")]
+    /// OAuth via OpenRouter.
     /// Required to use chat on free tier.
-    LLMAPIKey {},
+    OpenRouter {},
 }
 
 #[derive(Debug, Args)]
