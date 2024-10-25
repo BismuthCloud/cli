@@ -33,7 +33,7 @@ use tokio_tungstenite::{
 use url::Url;
 
 use crate::{
-    api::{self, ws::ChatModifiedFile, Organization, SubscriptionType},
+    api::{self, ws::ChatModifiedFile},
     APIClient, ResponseErrorExt as _,
 };
 
@@ -306,6 +306,7 @@ impl CodeBlock {
         let syntax = ps
             .find_syntax_by_extension(match language {
                 Some("python") => "py",
+                Some("go") => "go",
                 Some("markdown") => "md",
                 Some("javascript") => "js",
                 Some("typescript") => "tsx",
@@ -1111,26 +1112,26 @@ impl App {
                                 }
                             }
 
-                            let code_blocks = messages.iter_mut().flat_map(|msg| {
-                                msg.blocks.iter_mut().filter_map(|block| match block {
-                                    MessageBlock::Code(code) => Some(code),
-                                    _ => None,
-                                })
-                            });
-
-                            for ((start, end), block) in self
-                                .chat_history
-                                .code_block_hitboxes
-                                .iter()
-                                .zip(code_blocks)
-                            {
-                                // -1 for the border of chat history
-                                if (*start as isize - self.chat_history.scroll_position as isize)
-                                    <= (mouse.row as isize) - 1
-                                    && (*end as isize - self.chat_history.scroll_position as isize)
-                                        > (mouse.row as isize) - 1
-                                {
-                                    block.folded = !block.folded;
+                            let mut hitboxes_iter = self.chat_history.code_block_hitboxes.iter();
+                            for msg in messages.iter_mut() {
+                                for block in &mut msg.blocks {
+                                    match block {
+                                        MessageBlock::Code(code) => {
+                                            let (start, end) = hitboxes_iter.next().unwrap();
+                                            // -1 for the border of chat history
+                                            if (*start as isize
+                                                - self.chat_history.scroll_position as isize)
+                                                <= (mouse.row as isize) - 1
+                                                && (*end as isize
+                                                    - self.chat_history.scroll_position as isize)
+                                                    > (mouse.row as isize) - 1
+                                            {
+                                                code.folded = !code.folded;
+                                                msg.block_line_cache.1.clear();
+                                            }
+                                        }
+                                        _ => {}
+                                    }
                                 }
                             }
                             /*
