@@ -497,6 +497,7 @@ impl Widget for &mut ChatHistoryWidget {
         let lines: Vec<_> = messages
             .iter()
             .flat_map(|message| {
+                let mut rendered_line_len = 0;
                 let message_lines: Vec<_> = message
                     .blocks
                     .iter()
@@ -545,14 +546,16 @@ impl Widget for &mut ChatHistoryWidget {
                         };
                         lines.push(Line::raw(""));
                         // have to "simulate" line wrapping here to get an accurate line count
-                        line_idx += Paragraph::new(ratatui::text::Text::from_iter(lines.clone()))
-                            .wrap(ratatui::widgets::Wrap { trim: false })
-                            .line_count(area.width - 2); // -1 for each L/R border
+                        rendered_line_len +=
+                            Paragraph::new(ratatui::text::Text::from_iter(lines.clone()))
+                                .wrap(ratatui::widgets::Wrap { trim: false })
+                                .line_count(area.width - 2); // -1 for each L/R border
+                        line_idx += rendered_line_len;
                         lines
                     })
                     .collect();
 
-                message_hitboxes.push((line_idx - message_lines.len(), line_idx));
+                message_hitboxes.push((line_idx - rendered_line_len, line_idx));
                 message_lines
             })
             .collect();
@@ -649,7 +652,7 @@ impl Widget for &mut DiffReviewWidget {
 enum AppState {
     Chat,
     Help,
-    SubmittedBugReport,
+    SubmittedFeedback,
     Exit,
     ReviewDiff(DiffReviewWidget),
 }
@@ -1014,7 +1017,7 @@ impl App {
                     },
                     _ => {}
                 },
-                AppState::Help | AppState::SubmittedBugReport => {
+                AppState::Help | AppState::SubmittedFeedback => {
                     if let Event::Key(_) = event::read()? {
                         let mut state = self.state.lock().unwrap();
                         *state = AppState::Chat;
@@ -1122,7 +1125,6 @@ impl App {
                         KeyCode::Char('c')
                             if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
                         {
-                            dbg!("copy");
                         } */
                         KeyCode::Char('d')
                             if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
@@ -1195,12 +1197,15 @@ impl App {
                 "/bug" => {
                     let msg = input.split_once(' ').map(|(_, msg)| msg).unwrap_or("");
                     self.client
-                        .post("/bugreport")
+                        .post(&format!(
+                            "/projects/{}/features/{}/bugreport",
+                            self.project.id, self.feature.id
+                        ))
                         .json(&json!({ "message": msg }))
                         .send()
                         .await?;
                     let mut state = self.state.lock().unwrap();
-                    *state = AppState::SubmittedBugReport;
+                    *state = AppState::SubmittedFeedback;
                 }
                 // eh idk if we want this, seems like a good way to lose things even with the name check
                 "/undo" => {
@@ -1371,7 +1376,7 @@ fn ui(
         AppState::Help => {
             let help_text = r#"/exit, /quit, or Esc: Exit the chat
 /docs: Open the Bismuth documentation
-/bug {description}: Report a bug
+/feedback {description}: Send us feedback
 /help: Show this help"#;
             let paragraph = Paragraph::new(help_text).block(Block::bordered().title(vec![
                 "Help ".into(),
@@ -1381,8 +1386,8 @@ fn ui(
             frame.render_widget(Clear, area);
             frame.render_widget(paragraph, area);
         }
-        AppState::SubmittedBugReport => {
-            let text = "Bug report submitted. Thank you!";
+        AppState::SubmittedFeedback => {
+            let text = "\n\n    Feedback submitted. Thank you!    \n\n";
             let paragraph = Paragraph::new(text).block(Block::bordered().title(vec![
                 "Confirmation ".into(),
                 Span::styled("(press any key to close)", ratatui::style::Color::Yellow),
