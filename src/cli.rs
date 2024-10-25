@@ -88,10 +88,10 @@ pub struct LiteralOrFile {
 
 #[derive(Debug, Clone, Args)]
 pub struct GlobalOpts {
-    #[arg(long, default_value = std::env::var("BISMUTH_API").unwrap_or("https://api.bismuth.cloud".to_string()))]
+    #[arg(long, hide = true, default_value = std::env::var("BISMUTH_API").unwrap_or("https://api.bismuth.cloud".to_string()))]
     pub api_url: Url,
 
-    #[arg(long, default_value = default_config_file().into_os_string())]
+    #[arg(long, hide = true, default_value = default_config_file().into_os_string())]
     pub config_file: PathBuf,
 
     #[command(flatten)]
@@ -142,6 +142,7 @@ pub enum Command {
     /// Alias of `project import`.
     Import(ImportSource),
     /// Deploy a feature to the cloud. Alias of `feature deploy`.
+    #[clap(hide = true)]
     Deploy {
         #[clap(flatten)]
         feature: FeatureRef,
@@ -151,21 +152,25 @@ pub enum Command {
         timeout: u64,
     },
     /// Get the status of a deployment. Alias of `feature deploy-status`.
+    #[clap(hide = true)]
     DeployStatus {
         #[clap(flatten)]
         feature: FeatureRef,
     },
     /// Teardown a feature. Alias of `feature teardown`.
+    #[clap(hide = true)]
     Teardown {
         #[clap(flatten)]
         feature: FeatureRef,
     },
     /// Get the URL for a deployed feature. Alias of `feature get-url`.
+    #[clap(hide = true)]
     GetURL {
         #[clap(flatten)]
         feature: FeatureRef,
     },
     /// Get logs from a deployment. Alias of `feature logs`.
+    #[clap(hide = true)]
     Logs {
         #[clap(flatten)]
         feature: FeatureRef,
@@ -233,6 +238,7 @@ pub enum FeatureCommand {
     /// List all features in a project
     List { project: IdOrName },
     /// Manage feature configuration
+    #[clap(hide = true)]
     Config {
         #[clap(flatten)]
         feature: FeatureRef,
@@ -240,6 +246,7 @@ pub enum FeatureCommand {
         command: FeatureConfigCommand,
     },
     /// Deploy project/feature to the cloud
+    #[clap(hide = true)]
     Deploy {
         #[clap(flatten)]
         feature: FeatureRef,
@@ -249,21 +256,25 @@ pub enum FeatureCommand {
         timeout: u64,
     },
     /// Get the status of a deployment
+    #[clap(hide = true)]
     DeployStatus {
         #[clap(flatten)]
         feature: FeatureRef,
     },
     /// Teardown a feature
+    #[clap(hide = true)]
     Teardown {
         #[clap(flatten)]
         feature: FeatureRef,
     },
     /// Get the URL for a deployed feature
+    #[clap(hide = true)]
     GetURL {
         #[clap(flatten)]
         feature: FeatureRef,
     },
     /// Get logs from a deployment
+    #[clap(hide = true)]
     Logs {
         #[clap(flatten)]
         feature: FeatureRef,
@@ -280,6 +291,7 @@ pub enum FeatureConfigCommand {
 }
 
 #[derive(Debug, Subcommand)]
+#[clap(hide = true)]
 pub enum KVCommand {
     Get {
         #[clap(flatten)]
@@ -300,6 +312,7 @@ pub enum KVCommand {
 }
 
 #[derive(Debug, Subcommand)]
+#[clap(hide = true)]
 pub enum BlobCommand {
     List {
         #[clap(flatten)]
@@ -334,6 +347,7 @@ pub enum BlobCommand {
 }
 
 #[derive(Debug, Subcommand)]
+#[clap(hide = true)]
 pub enum SQLCommand {
     Query {
         #[clap(flatten)]
