@@ -161,6 +161,7 @@ pub mod ws {
     #[serde(rename_all = "camelCase")]
     pub struct AuthMessage {
         pub token: String,
+        pub session: String,
         pub feature_id: u64,
     }
 

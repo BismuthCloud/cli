@@ -183,6 +183,11 @@ pub enum Command {
         /// The project/feature to work on.
         /// If not specified, attempt to find based on the provided (or current) directory.
         feature: Option<String>,
+        /// Specify a chat session name to use.
+        /// This can be used to separate chats within a single feature.
+        #[clap(long)]
+        #[clap(default_value = "default")]
+        session: String,
     },
 }
 

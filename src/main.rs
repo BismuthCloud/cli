@@ -1412,7 +1412,11 @@ async fn main() -> Result<()> {
             let feature = resolve_feature_id(&client, &project, &feature_name).await?;
             feature_logs(&project, &feature, *follow, &client).await
         }
-        cli::Command::Chat { feature, repo } => {
+        cli::Command::Chat {
+            feature,
+            repo,
+            session,
+        } => {
             let current_user: api::User = client
                 .get("/../../auth/me")
                 .send()
@@ -1483,7 +1487,15 @@ async fn main() -> Result<()> {
                     }
                 })?;
 
-            start_chat(&current_user, &project, &feature, &repo_path, &client).await
+            start_chat(
+                &current_user,
+                &project,
+                &feature,
+                &session,
+                &repo_path,
+                &client,
+            )
+            .await
         }
         cli::Command::Version => unreachable!(),
         cli::Command::Login => unreachable!(),

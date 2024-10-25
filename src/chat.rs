@@ -431,21 +431,23 @@ impl ChatMessage {
     }
 
     fn format_user<'a>(user: &ChatMessageUser) -> Vec<Span<'a>> {
-        vec![
-            // Copy
-            "⎘ ".into(),
-            match user {
-                ChatMessageUser::AI => ratatui::text::Span::styled(
-                    "Bismuth",
-                    ratatui::style::Style::default().fg(ratatui::style::Color::Magenta),
-                ),
-                ChatMessageUser::User(ref user) => ratatui::text::Span::styled(
-                    user.clone(),
-                    ratatui::style::Style::default().fg(ratatui::style::Color::Cyan),
-                ),
-            },
-            ": ".into(),
-        ]
+        let mut res = Vec::with_capacity(3);
+        // Copy
+        if copypasta::ClipboardContext::new().is_ok() {
+            res.push("⎘ ".into())
+        }
+        res.push(match user {
+            ChatMessageUser::AI => ratatui::text::Span::styled(
+                "Bismuth",
+                ratatui::style::Style::default().fg(ratatui::style::Color::Magenta),
+            ),
+            ChatMessageUser::User(ref user) => ratatui::text::Span::styled(
+                user.clone(),
+                ratatui::style::Style::default().fg(ratatui::style::Color::Cyan),
+            ),
+        });
+        res.push(": ".into());
+        res
     }
 }
 
@@ -1096,19 +1098,23 @@ impl App {
                                     self.chat_history.selection = None;
                             */
                             let mut messages = self.chat_history.messages.lock().unwrap();
-                            for ((start, end), block) in self
-                                .chat_history
-                                .message_hitboxes
-                                .iter()
-                                .zip(messages.iter())
-                            {
-                                // -1 for the border of chat history
-                                if (*start as isize - self.chat_history.scroll_position as isize)
-                                    == (mouse.row as isize) - 1
-                                    && (mouse.column as usize == 1 || mouse.column as usize == 2)
+
+                            if let Ok(mut clipboard_ctx) = copypasta::ClipboardContext::new() {
+                                for ((start, end), block) in self
+                                    .chat_history
+                                    .message_hitboxes
+                                    .iter()
+                                    .zip(messages.iter())
                                 {
-                                    let mut ctx = copypasta::ClipboardContext::new().unwrap();
-                                    ctx.set_contents(block.raw.clone()).unwrap();
+                                    // -1 for the border of chat history
+                                    if (*start as isize
+                                        - self.chat_history.scroll_position as isize)
+                                        == (mouse.row as isize) - 1
+                                        && (mouse.column as usize == 1
+                                            || mouse.column as usize == 2)
+                                    {
+                                        clipboard_ctx.set_contents(block.raw.clone()).unwrap();
+                                    }
                                 }
                             }
 
@@ -1301,6 +1307,7 @@ pub async fn start_chat(
     current_user: &api::User,
     project: &api::Project,
     feature: &api::Feature,
+    session: &str,
     repo_path: &Path,
     client: &APIClient,
 ) -> Result<()> {
@@ -1328,6 +1335,7 @@ pub async fn start_chat(
         .send(Message::Text(
             serde_json::to_string(&api::ws::Message::Auth(api::ws::AuthMessage {
                 feature_id: feature.id.clone(),
+                session: session.to_string(),
                 token: client.token.clone(),
             }))?
             .into(),
