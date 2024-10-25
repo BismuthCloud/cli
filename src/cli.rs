@@ -104,11 +104,6 @@ pub enum Command {
     Login,
     /// Show the CLI version
     Version,
-    /// Configure the CLI
-    Configure {
-        #[clap(subcommand)]
-        command: ConfigureCommand,
-    },
     /// Manage projects
     Project {
         #[clap(subcommand)]
@@ -189,14 +184,6 @@ pub enum Command {
         /// If not specified, attempt to find based on the provided (or current) directory.
         feature: Option<String>,
     },
-}
-
-#[derive(Debug, Subcommand)]
-pub enum ConfigureCommand {
-    #[clap(name = "openrouter")]
-    /// OAuth via OpenRouter.
-    /// Required to use chat on free tier.
-    OpenRouter {},
 }
 
 #[derive(Debug, Args)]
