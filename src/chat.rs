@@ -373,6 +373,7 @@ struct ChatMessage {
     raw: String,
     finalized: bool,
     blocks: Vec<MessageBlock>,
+    block_line_cache: (usize, Vec<usize>),
 }
 
 impl ChatMessage {
@@ -424,6 +425,7 @@ impl ChatMessage {
             raw: content.to_string(),
             finalized: false,
             blocks,
+            block_line_cache: (0, vec![]),
         }
     }
 
@@ -493,15 +495,16 @@ impl Widget for &mut ChatHistoryWidget {
         let mut code_block_hitboxes: Vec<(usize, usize)> = vec![];
         let mut message_hitboxes: Vec<(usize, usize)> = vec![];
 
-        let messages = self.messages.lock().unwrap();
+        let mut messages = self.messages.lock().unwrap();
         let lines: Vec<_> = messages
-            .iter()
+            .iter_mut()
             .flat_map(|message| {
-                let mut rendered_line_len = 0;
+                let mut rendered_line_lens = vec![];
                 let message_lines: Vec<_> = message
                     .blocks
                     .iter()
-                    .flat_map(|block| {
+                    .enumerate()
+                    .flat_map(|(idx, block)| {
                         let mut lines = match block {
                             MessageBlock::Text(lines) => lines.clone(),
                             MessageBlock::Thinking(detail) => {
@@ -545,17 +548,35 @@ impl Widget for &mut ChatHistoryWidget {
                             }
                         };
                         lines.push(Line::raw(""));
-                        // have to "simulate" line wrapping here to get an accurate line count
-                        rendered_line_len +=
-                            Paragraph::new(ratatui::text::Text::from_iter(lines.clone()))
+                        let rendered_line_len = if message.finalized
+                            && message.block_line_cache.0 == area.width as usize
+                            && message.block_line_cache.1.len() > idx
+                        {
+                            message.block_line_cache.1[idx]
+                        } else {
+                            // Just resized, so clear the cache.
+                            // The len guard above will make sure we end up recalculating each block
+                            if message.block_line_cache.0 != area.width as usize {
+                                message.block_line_cache.0 = area.width as usize;
+                                message.block_line_cache.1.clear();
+                            }
+                            // have to "simulate" line wrapping here to get an accurate line count
+                            let res = Paragraph::new(ratatui::text::Text::from_iter(lines.clone()))
                                 .wrap(ratatui::widgets::Wrap { trim: false })
                                 .line_count(area.width - 2); // -1 for each L/R border
+                            message.block_line_cache.1.push(res);
+                            res
+                        };
+                        rendered_line_lens.push(rendered_line_len);
                         line_idx += rendered_line_len;
                         lines
                     })
                     .collect();
 
-                message_hitboxes.push((line_idx - rendered_line_len, line_idx));
+                message_hitboxes.push((
+                    line_idx - rendered_line_lens.iter().sum::<usize>(),
+                    line_idx,
+                ));
                 message_lines
             })
             .collect();
@@ -565,9 +586,8 @@ impl Widget for &mut ChatHistoryWidget {
             .scroll((self.scroll_position as u16, 0))
             .wrap(ratatui::widgets::Wrap { trim: false });
 
-        // -2 to account for the borders
         // +3 so you can scroll past the bottom a bit to see this is really the end
-        let nlines = paragraph.line_count(area.width - 2) + 3;
+        let nlines = message_hitboxes.last().unwrap_or(&(0, 0)).1 + 3;
         let old_scroll_max = self.scroll_max;
         self.scroll_max = nlines.max(area.height as usize) - (area.height as usize);
         // Auto scroll to the bottom if we were already at the bottom
