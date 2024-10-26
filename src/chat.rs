@@ -513,7 +513,7 @@ impl Widget for &mut ChatHistoryWidget {
                             MessageBlock::Thinking(detail) => {
                                 vec![Line::styled(
                                     format!(
-                                        "{} {}",
+                                        "  {} {}",
                                         detail,
                                         vec!['|', '\\', '-', '/'][SystemTime::now()
                                             .duration_since(UNIX_EPOCH)
