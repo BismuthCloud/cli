@@ -511,19 +511,24 @@ impl Widget for &mut ChatHistoryWidget {
                         let mut lines = match block {
                             MessageBlock::Text(lines) => lines.clone(),
                             MessageBlock::Thinking(detail) => {
+                                let is_last = idx == message.blocks.len() - 1;
+                                let indicator = if is_last {
+                                    vec!['|', '\\', '-', '/'][SystemTime::now()
+                                        .duration_since(UNIX_EPOCH)
+                                        .unwrap()
+                                        .subsec_millis()
+                                        as usize
+                                        / 251]
+                                } else {
+                                    '✓'
+                                };
                                 vec![Line::styled(
-                                    format!(
-                                        "  {} {}",
-                                        detail,
-                                        vec!['|', '\\', '-', '/'][SystemTime::now()
-                                            .duration_since(UNIX_EPOCH)
-                                            .unwrap()
-                                            .subsec_millis()
-                                            as usize
-                                            / 251]
-                                    ),
-                                    ratatui::style::Style::default()
-                                        .fg(ratatui::style::Color::LightGreen),
+                                    format!("  {} {}", detail, indicator),
+                                    ratatui::style::Style::default().fg(if is_last {
+                                        ratatui::style::Color::LightGreen
+                                    } else {
+                                        ratatui::style::Color::Green
+                                    }),
                                 )]
                             }
                             MessageBlock::Code(code) => {
@@ -786,35 +791,6 @@ impl App {
                             let mut new_raw = last_msg.raw.clone() + &token.text;
                             new_raw = new_raw.replace("\n<BCODE>\n", "\n");
                             *last_msg = ChatMessage::new(last_msg.user.clone(), &new_raw);
-                            // let nblocks = last_msg.blocks.len();
-                            // let last_block = last_msg.blocks.last_mut().unwrap();
-                            // match last_block {
-                            //     MessageBlock::Text(lines) => {
-                            //         if lines.len() > 0 {
-                            //             lines
-                            //                 .last_mut();
-                            //                 .unwrap()
-                            //                 .spans
-                            //                 .push(Span::raw(token.text));
-                            //             // TODO: trim off ```python ?
-                            //         } else {
-                            //             lines.push(Line::from(vec![Span::raw(token.text)]));
-                            //         }
-                            //     }
-                            //     MessageBlock::Thinking => {
-                            //         if nblocks == 1 {
-                            //             // Replace the entire message so we get the Bismuth: prefix back
-                            //             *last_msg =
-                            //                 ChatMessage::new(ChatMessageUser::AI, &token.text);
-                            //         } else {
-                            //             // Otherwise just replace this thinking block
-                            //             *last_block = MessageBlock::new_text(&token.text);
-                            //         }
-                            //     }
-                            //     _ => {
-                            //         last_msg.blocks.push(MessageBlock::new_text(&token.text));
-                            //     }
-                            // }
                         }
                         api::ws::ChatMessageBody::PartialMessage { partial_message } => {
                             let partial_message = partial_message
@@ -823,7 +799,7 @@ impl App {
                             let mut scrollback = scrollback.lock().unwrap();
                             let msg = ChatMessage::new(ChatMessageUser::AI, &partial_message);
                             // Basically just to support snapshot resumption in daneel
-                            if (scrollback.len() > 0) {
+                            if scrollback.len() > 0 {
                                 let last = scrollback.last_mut().unwrap();
                                 *last = msg;
                             } else {
@@ -865,12 +841,7 @@ impl App {
                     if let Some(MessageBlock::Code(_)) = last.blocks.last() {
                         last.blocks.pop();
                     }
-                    if let Some(MessageBlock::Thinking(_)) = last.blocks.last() {
-                        *last.blocks.last_mut().unwrap() =
-                            MessageBlock::Thinking(resp.state.clone());
-                    } else {
-                        last.blocks.push(MessageBlock::Thinking(resp.state.clone()));
-                    }
+                    last.blocks.push(MessageBlock::Thinking(resp.state.clone()));
                 }
                 api::ws::Message::Error(err) => {
                     return Err(anyhow!(err));
