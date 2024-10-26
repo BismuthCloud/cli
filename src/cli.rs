@@ -180,15 +180,19 @@ pub enum Command {
         /// If not, the repo is automatically cloned into a new folder in the current directory.
         #[clap(long)]
         repo: Option<PathBuf>,
-        /// The project/feature to work on.
-        /// If not specified, attempt to find based on the provided (or current) directory.
-        feature: Option<String>,
         /// Specify a chat session name to use.
-        /// This can be used to separate chats within a single feature.
-        #[clap(long)]
-        #[clap(default_value = "default")]
-        session: String,
+        #[clap(short, long = "session")]
+        session_name: Option<String>,
+        #[clap(subcommand)]
+        command: Option<ChatSubcommand>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ChatSubcommand {
+    ListSessions,
+    RenameSession { old_name: String, new_name: String },
+    DeleteSession { name: String },
 }
 
 #[derive(Debug, Args)]

@@ -511,16 +511,20 @@ impl Widget for &mut ChatHistoryWidget {
                         let mut lines = match block {
                             MessageBlock::Text(lines) => lines.clone(),
                             MessageBlock::Thinking(detail) => {
-                                vec![Line::raw(format!(
-                                    "{} {}",
-                                    detail,
-                                    vec!['|', '\\', '-', '/'][SystemTime::now()
-                                        .duration_since(UNIX_EPOCH)
-                                        .unwrap()
-                                        .subsec_millis()
-                                        as usize
-                                        / 251]
-                                ))]
+                                vec![Line::styled(
+                                    format!(
+                                        "{} {}",
+                                        detail,
+                                        vec!['|', '\\', '-', '/'][SystemTime::now()
+                                            .duration_since(UNIX_EPOCH)
+                                            .unwrap()
+                                            .subsec_millis()
+                                            as usize
+                                            / 251]
+                                    ),
+                                    ratatui::style::Style::default()
+                                        .fg(ratatui::style::Color::LightGreen),
+                                )]
                             }
                             MessageBlock::Code(code) => {
                                 let code_block_lines = if code.folded {
@@ -1307,7 +1311,7 @@ pub async fn start_chat(
     current_user: &api::User,
     project: &api::Project,
     feature: &api::Feature,
-    session: &str,
+    session: &api::ChatSession,
     repo_path: &Path,
     client: &APIClient,
 ) -> Result<()> {
@@ -1315,8 +1319,8 @@ pub async fn start_chat(
 
     let scrollback: Vec<ChatMessage> = client
         .get(&format!(
-            "/projects/{}/features/{}/chat/list",
-            project.id, feature.id
+            "/projects/{}/features/{}/chat/sessions/{}/list",
+            project.id, feature.id, session.id
         ))
         .send()
         .await?
@@ -1335,7 +1339,7 @@ pub async fn start_chat(
         .send(Message::Text(
             serde_json::to_string(&api::ws::Message::Auth(api::ws::AuthMessage {
                 feature_id: feature.id.clone(),
-                session: session.to_string(),
+                session_id: session.id.clone(),
                 token: client.token.clone(),
             }))?
             .into(),

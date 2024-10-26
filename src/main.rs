@@ -216,6 +216,39 @@ async fn resolve_feature_id(
     Ok(get_feature.json().await?)
 }
 
+async fn resolve_chat_session(
+    client: &APIClient,
+    project: &api::Project,
+    feature: &api::Feature,
+    session_name: &str,
+) -> Result<api::ChatSession> {
+    let sessions: Vec<api::ChatSession> = client
+        .get(&format!(
+            "/projects/{}/features/{}/chat/sessions",
+            project.id, feature.id
+        ))
+        .send()
+        .await?
+        .error_body_for_status()
+        .await?
+        .json()
+        .await?;
+    sessions
+        .iter()
+        .find(|s| s.name() == session_name)
+        .cloned()
+        .ok_or_else(|| {
+            anyhow!(
+                "No such chat session. Available sessions: {}",
+                sessions
+                    .iter()
+                    .map(|s| s.name())
+                    .collect::<Vec<String>>()
+                    .join(", ")
+            )
+        })
+}
+
 fn set_bismuth_remote(repo: &Path, project: &api::Project) -> Result<()> {
     let mut git_url = GLOBAL_OPTS
         .get()
@@ -1413,9 +1446,9 @@ async fn main() -> Result<()> {
             feature_logs(&project, &feature, *follow, &client).await
         }
         cli::Command::Chat {
-            feature,
             repo,
-            session,
+            session_name,
+            command,
         } => {
             let current_user: api::User = client
                 .get("/../../auth/me")
@@ -1426,76 +1459,141 @@ async fn main() -> Result<()> {
                 .json()
                 .await?;
 
-            let (project, feature) = match feature {
-                Some(feature) => {
-                    let (project_name, feature_name) = cli::FeatureRef {
-                        feature: feature.to_string(),
+            let repo_path = match repo {
+                Some(repo) => {
+                    if repo.exists() {
+                        repo.to_path_buf()
+                    } else {
+                        return Err(anyhow!("Repo does not exist"));
                     }
-                    .split();
-                    let project = resolve_project_id(&client, &project_name).await?;
-                    let feature = resolve_feature_id(&client, &project, &feature_name).await?;
-                    (project, feature)
                 }
+                _ => std::env::current_dir()?,
+            };
+            let (project, feature) = get_project_and_feature_for_repo(&client, &repo_path).await?;
+
+            match command {
                 None => {
                     let repo_path = match repo {
                         Some(repo) => {
                             if repo.exists() {
                                 repo.to_path_buf()
                             } else {
-                                return Err(anyhow!("Repo does not exist"));
+                                project_clone(&project, Some(repo))?
                             }
                         }
-                        _ => std::env::current_dir()?,
+                        None => {
+                            // Check if CWD is a git repo which has the correct remote
+                            let repo = git2::Repository::open_from_env()?;
+                            let remote_url = repo
+                                .find_remote("bismuth")
+                                .map(|r| r.url().unwrap().to_string())
+                                .unwrap_or("".to_string());
+                            if remote_url.contains(&project.clone_token) {
+                                std::env::current_dir().unwrap()
+                            } else {
+                                project_clone(&project, None)?
+                            }
+                        }
                     };
-                    get_project_and_feature_for_repo(&client, &repo_path).await?
-                }
-            };
-            let repo_path = match repo {
-                Some(repo) => {
-                    if repo.exists() {
-                        repo.to_path_buf()
-                    } else {
-                        project_clone(&project, Some(repo))?
-                    }
-                }
-                None => {
-                    // Check if CWD is a git repo which has the correct remote
-                    let repo = git2::Repository::open_from_env()?;
-                    let remote_url = repo
-                        .find_remote("bismuth")
-                        .map(|r| r.url().unwrap().to_string())
-                        .unwrap_or("".to_string());
-                    if remote_url.contains(&project.clone_token) {
-                        std::env::current_dir().unwrap()
-                    } else {
-                        project_clone(&project, None)?
-                    }
-                }
-            };
-            Command::new("git")
-                .arg("-C")
-                .arg(&repo_path)
-                .arg("fetch")
-                .arg("bismuth")
-                .output()
-                .map_err(|e| anyhow!(e))
-                .and_then(|o| {
-                    if o.status.success() {
-                        Ok(())
-                    } else {
-                        Err(anyhow!("Failed to fetch ({})", o.status))
-                    }
-                })?;
+                    Command::new("git")
+                        .arg("-C")
+                        .arg(&repo_path)
+                        .arg("fetch")
+                        .arg("bismuth")
+                        .output()
+                        .map_err(|e| anyhow!(e))
+                        .and_then(|o| {
+                            if o.status.success() {
+                                Ok(())
+                            } else {
+                                Err(anyhow!("Failed to fetch ({})", o.status))
+                            }
+                        })?;
 
-            start_chat(
-                &current_user,
-                &project,
-                &feature,
-                &session,
-                &repo_path,
-                &client,
-            )
-            .await
+                    let existing_session = match session_name {
+                        Some(session_name) => {
+                            resolve_chat_session(&client, &project, &feature, &session_name)
+                                .await
+                                .ok()
+                        }
+                        None => None,
+                    };
+                    let session = match existing_session {
+                        Some(session) => session,
+                        None => {
+                            client
+                                .post(&format!(
+                                    "/projects/{}/features/{}/chat/sessions",
+                                    project.id, feature.id
+                                ))
+                                .json(&json!({ "name": session_name }))
+                                .send()
+                                .await?
+                                .error_body_for_status()
+                                .await?
+                                .json()
+                                .await?
+                        }
+                    };
+
+                    start_chat(
+                        &current_user,
+                        &project,
+                        &feature,
+                        &session,
+                        &repo_path,
+                        &client,
+                    )
+                    .await
+                }
+                Some(cli::ChatSubcommand::ListSessions) => {
+                    let sessions: Vec<api::ChatSession> = client
+                        .get(&format!(
+                            "/projects/{}/features/{}/chat/sessions",
+                            project.id, feature.id
+                        ))
+                        .send()
+                        .await?
+                        .error_body_for_status()
+                        .await?
+                        .json()
+                        .await?;
+                    for session in sessions {
+                        println!("{}", session.name());
+                    }
+                    Ok(())
+                }
+                Some(cli::ChatSubcommand::RenameSession { old_name, new_name }) => {
+                    let session =
+                        resolve_chat_session(&client, &project, &feature, &old_name).await?;
+                    client
+                        .put(&format!(
+                            "/projects/{}/features/{}/chat/sessions/{}",
+                            project.id, feature.id, session.id
+                        ))
+                        .json(&json!({ "name": new_name }))
+                        .send()
+                        .await?
+                        .error_body_for_status()
+                        .await?;
+
+                    Ok(())
+                }
+                Some(cli::ChatSubcommand::DeleteSession { name }) => {
+                    let session = resolve_chat_session(&client, &project, &feature, &name).await?;
+                    client
+                        .delete(&format!(
+                            "/projects/{}/features/{}/chat/sessions/{}",
+                            project.id, feature.id, session.id
+                        ))
+                        .send()
+                        .await?
+                        .error_body_for_status()
+                        .await?;
+
+                    Ok(())
+                }
+            }
         }
         cli::Command::Version => unreachable!(),
         cli::Command::Login => unreachable!(),

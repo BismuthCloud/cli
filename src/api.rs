@@ -124,6 +124,22 @@ impl Display for GitHubAppInstall {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChatSession {
+    pub id: u64,
+    #[serde(rename = "name")]
+    _name: Option<String>,
+}
+
+impl ChatSession {
+    pub fn name(&self) -> String {
+        match &self._name {
+            Some(name) => name.clone(),
+            None => format!("session-{}", self.id),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChatMessage {
     #[serde(rename = "isAI")]
@@ -161,7 +177,7 @@ pub mod ws {
     #[serde(rename_all = "camelCase")]
     pub struct AuthMessage {
         pub token: String,
-        pub session: String,
+        pub session_id: u64,
         pub feature_id: u64,
     }
 
