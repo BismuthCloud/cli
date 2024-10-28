@@ -499,125 +499,143 @@ impl Widget for &mut ChatHistoryWidget {
         let mut message_hitboxes: Vec<(usize, usize)> = vec![];
 
         let mut messages = self.messages.lock().unwrap();
-        let lines: Vec<_> = messages
-            .iter_mut()
-            .flat_map(|message| {
-                let mut rendered_line_lens = vec![];
-                let message_lines: Vec<_> = message
-                    .blocks
-                    .iter()
-                    .enumerate()
-                    .flat_map(|(idx, block)| {
-                        let mut lines = match block {
-                            MessageBlock::Text(lines) => lines.clone(),
-                            MessageBlock::Thinking(detail) => {
-                                let is_last = idx == message.blocks.len() - 1;
-                                let indicator = if is_last {
-                                    vec!['|', '\\', '-', '/'][SystemTime::now()
-                                        .duration_since(UNIX_EPOCH)
-                                        .unwrap()
-                                        .subsec_millis()
-                                        as usize
-                                        / 251]
-                                } else {
-                                    '✓'
-                                };
-                                vec![Line::styled(
-                                    format!("  {} {}", detail, indicator),
-                                    ratatui::style::Style::default().fg(if is_last {
-                                        ratatui::style::Color::LightGreen
+        if messages.len() > 0 {
+            let lines: Vec<_> = messages
+                .iter_mut()
+                .flat_map(|message| {
+                    let mut rendered_line_lens = vec![];
+                    let message_lines: Vec<_> = message
+                        .blocks
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(idx, block)| {
+                            let mut lines = match block {
+                                MessageBlock::Text(lines) => lines.clone(),
+                                MessageBlock::Thinking(detail) => {
+                                    let is_last = idx == message.blocks.len() - 1;
+                                    let indicator = if is_last {
+                                        vec!['|', '\\', '-', '/'][SystemTime::now()
+                                            .duration_since(UNIX_EPOCH)
+                                            .unwrap()
+                                            .subsec_millis()
+                                            as usize
+                                            / 251]
                                     } else {
-                                        ratatui::style::Color::Green
-                                    }),
-                                )]
-                            }
-                            MessageBlock::Code(code) => {
-                                let code_block_lines = if code.folded {
+                                        '✓'
+                                    };
                                     vec![Line::styled(
-                                        title_case(
-                                            &format!(
-                                                "{} code block (click to expand)",
-                                                &code.language
-                                            )
-                                            .trim(),
-                                        ),
-                                        ratatui::style::Style::default()
-                                            .fg(ratatui::style::Color::Yellow),
+                                        format!("  {} {}", detail, indicator),
+                                        ratatui::style::Style::default().fg(if is_last {
+                                            ratatui::style::Color::LightGreen
+                                        } else {
+                                            ratatui::style::Color::Green
+                                        }),
                                     )]
-                                } else {
-                                    code.lines
-                                        .iter()
-                                        .map(|line| {
-                                            let mut indented = line.clone();
-                                            indented.spans.insert(0, "│ ".into());
-                                            indented
-                                        })
-                                        .collect()
-                                };
-                                code_block_hitboxes
-                                    .push((line_idx, line_idx + code_block_lines.len()));
-                                code_block_lines
-                            }
-                        };
-                        lines.push(Line::raw(""));
-                        let rendered_line_len = if message.finalized
-                            && message.block_line_cache.0 == area.width as usize
-                            && message.block_line_cache.1.len() > idx
-                        {
-                            message.block_line_cache.1[idx]
-                        } else {
-                            // Just resized, so clear the cache.
-                            // The len guard above will make sure we end up recalculating each block
-                            if message.block_line_cache.0 != area.width as usize {
-                                message.block_line_cache.0 = area.width as usize;
-                                message.block_line_cache.1.clear();
-                            }
-                            // have to "simulate" line wrapping here to get an accurate line count
-                            let res = Paragraph::new(ratatui::text::Text::from_iter(lines.clone()))
-                                .wrap(ratatui::widgets::Wrap { trim: false })
-                                .line_count(area.width - 2); // -1 for each L/R border
-                            message.block_line_cache.1.push(res);
-                            res
-                        };
-                        rendered_line_lens.push(rendered_line_len);
-                        line_idx += rendered_line_len;
-                        lines
-                    })
-                    .collect();
+                                }
+                                MessageBlock::Code(code) => {
+                                    let code_block_lines = if code.folded {
+                                        vec![Line::styled(
+                                            title_case(
+                                                &format!(
+                                                    "{} code block (click to expand)",
+                                                    &code.language
+                                                )
+                                                .trim(),
+                                            ),
+                                            ratatui::style::Style::default()
+                                                .fg(ratatui::style::Color::Yellow),
+                                        )]
+                                    } else {
+                                        code.lines
+                                            .iter()
+                                            .map(|line| {
+                                                let mut indented = line.clone();
+                                                indented.spans.insert(0, "│ ".into());
+                                                indented
+                                            })
+                                            .collect()
+                                    };
+                                    code_block_hitboxes
+                                        .push((line_idx, line_idx + code_block_lines.len()));
+                                    code_block_lines
+                                }
+                            };
+                            lines.push(Line::raw(""));
+                            let rendered_line_len = if message.finalized
+                                && message.block_line_cache.0 == area.width as usize
+                                && message.block_line_cache.1.len() > idx
+                            {
+                                message.block_line_cache.1[idx]
+                            } else {
+                                // Just resized, so clear the cache.
+                                // The len guard above will make sure we end up recalculating each block
+                                if message.block_line_cache.0 != area.width as usize {
+                                    message.block_line_cache.0 = area.width as usize;
+                                    message.block_line_cache.1.clear();
+                                }
+                                // have to "simulate" line wrapping here to get an accurate line count
+                                let res =
+                                    Paragraph::new(ratatui::text::Text::from_iter(lines.clone()))
+                                        .wrap(ratatui::widgets::Wrap { trim: false })
+                                        .line_count(area.width - 2); // -1 for each L/R border
+                                message.block_line_cache.1.push(res);
+                                res
+                            };
+                            rendered_line_lens.push(rendered_line_len);
+                            line_idx += rendered_line_len;
+                            lines
+                        })
+                        .collect();
 
-                message_hitboxes.push((
-                    line_idx - rendered_line_lens.iter().sum::<usize>(),
-                    line_idx,
-                ));
-                message_lines
-            })
-            .collect();
+                    message_hitboxes.push((
+                        line_idx - rendered_line_lens.iter().sum::<usize>(),
+                        line_idx,
+                    ));
+                    message_lines
+                })
+                .collect();
 
-        let paragraph = Paragraph::new(ratatui::text::Text::from_iter(lines))
-            .block(block)
-            .scroll((self.scroll_position as u16, 0))
-            .wrap(ratatui::widgets::Wrap { trim: false });
+            let paragraph = Paragraph::new(ratatui::text::Text::from_iter(lines))
+                .block(block)
+                .scroll((self.scroll_position as u16, 0))
+                .wrap(ratatui::widgets::Wrap { trim: false });
 
-        // +3 so you can scroll past the bottom a bit to see this is really the end
-        let nlines = message_hitboxes.last().unwrap_or(&(0, 0)).1 + 3;
-        let old_scroll_max = self.scroll_max;
-        self.scroll_max = nlines.max(area.height as usize) - (area.height as usize);
-        // Auto scroll to the bottom if we were already at the bottom
-        if self.scroll_position == old_scroll_max {
-            self.scroll_position = self.scroll_max;
+            // +3 so you can scroll past the bottom a bit to see this is really the end
+            let nlines = message_hitboxes.last().unwrap_or(&(0, 0)).1 + 3;
+            let old_scroll_max = self.scroll_max;
+            self.scroll_max = nlines.max(area.height as usize) - (area.height as usize);
+            // Auto scroll to the bottom if we were already at the bottom
+            if self.scroll_position == old_scroll_max {
+                self.scroll_position = self.scroll_max;
+            }
+            self.scroll_state = self.scroll_state.content_length(self.scroll_max);
+
+            self.code_block_hitboxes = code_block_hitboxes;
+            self.message_hitboxes = message_hitboxes;
+
+            paragraph.render(area, buf);
+            StatefulWidget::render(
+                Scrollbar::new(ratatui::widgets::ScrollbarOrientation::VerticalRight),
+                area,
+                buf,
+                &mut self.scroll_state,
+            );
+        } else {
+            block.render(area, buf);
+            let paragraph = Paragraph::new(
+                r#"
+ ____  _                     _   _
+| __ )(_)___ _ __ ___  _   _| |_| |__
+|  _ \| / __| '_ ` _ \| | | | __| '_ \
+| |_) | \__ \ | | | | | |_| | |_| | | |
+|____/|_|___/_| |_| |_|\__,_|\__|_| |_|
+"#,
+            )
+            .style(Style::default().fg(ratatui::style::Color::Magenta));
+            let area = centered_paragraph(&paragraph, area);
+            Clear.render(area, buf);
+            paragraph.render(area, buf);
         }
-        self.scroll_state = self.scroll_state.content_length(self.scroll_max);
-
-        self.code_block_hitboxes = code_block_hitboxes;
-        self.message_hitboxes = message_hitboxes;
-
-        paragraph.render(area, buf);
-        StatefulWidget::render(
-            Scrollbar::new(ratatui::widgets::ScrollbarOrientation::VerticalRight),
-            area,
-            buf,
-            &mut self.scroll_state,
-        );
     }
 }
 
@@ -862,7 +880,7 @@ impl App {
         let state = self.state.clone();
         tokio::spawn(async move {
             let res = Self::read_loop(&mut read, scrollback.clone(), &repo_path, state).await;
-            dead_tx.send(res).unwrap();
+            let _ = dead_tx.send(res);
         });
 
         let mut last_draw = Instant::now();
@@ -1350,17 +1368,6 @@ fn ui(
             ratatui::crossterm::execute!(std::io::stdout(), SetCursorStyle::SteadyBlock)
         }
     };
-
-    /*
-    // Make background black when not focused
-    // This feels like a bit too much though
-    let background = Block::default().bg(if focus {
-        ratatui::style::Color::Reset
-    } else {
-        ratatui::style::Color::Black
-    });
-    frame.render_widget(background, frame.size());
-    */
 
     let vertical = ratatui::layout::Layout::vertical([
         ratatui::layout::Constraint::Percentage(100),

@@ -78,6 +78,8 @@ impl ResponseErrorExt for reqwest::Response {
         let status = self.status();
         if status.is_success() {
             Ok(self)
+        } else if status == reqwest::StatusCode::UNAUTHORIZED {
+            Err(anyhow!("Unauthorized - maybe you need to login?",))
         } else {
             let body = self.text().await?;
             Err(anyhow!("{} ({})", body, status))
@@ -141,7 +143,8 @@ async fn confirm(prompt: impl Into<String>, default: bool) -> Result<bool> {
     return Ok(confirm == "y");
 }
 
-async fn press_any_key() -> Result<()> {
+async fn press_any_key(msg: &str) -> Result<()> {
+    println!("{}", msg);
     std::io::stdout().flush()?;
     let termios = termios::Termios::from_fd(0).unwrap();
     let mut new_termios = termios.clone();
@@ -363,8 +366,7 @@ async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Resul
                             .any(|r| r.repo.to_lowercase() == gh_repo_name)
                     {
                         let orig_gh_repos = gh_repos.clone();
-                        println!("Press any key to open the installation page.");
-                        press_any_key().await?;
+                        press_any_key("Press any key to open the installation page.").await?;
                         open::that_detached(github_app_url(&client.base_url))?;
                         print!("Waiting for app install");
                         std::io::stdout().flush()?;
@@ -403,7 +405,10 @@ async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Resul
                         .json()
                         .await?;
                     set_bismuth_remote(&repo, &project)?;
-                    println!("Successfully imported {}!", gh_repo.unwrap().repo);
+                    println!(
+                        "{}",
+                        format!("🎉 Successfully imported {}", gh_repo.unwrap().repo).green()
+                    );
                     return Ok(());
                 }
             }
@@ -443,21 +448,20 @@ async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Resul
                 }
             })?;
         println!(
-            "Successfully imported {} to project {}!",
-            repo.canonicalize()?.as_path().display(),
-            project.name
+            "{}",
+            format!(
+                "🎉 Successfully imported {} to project {}",
+                repo.as_path().display(),
+                project.name
+            )
+            .green()
         );
         println!("You can now push to Bismuth with `git push bismuth` in this repository.");
-        println!(
-                    "You can also deploy this project with `bismuth deploy '{}/{}'` after creating an entrypoint.",
-                    project.name, branch_name
-                );
         Ok(())
     } else {
         if gh_repos.is_empty() {
             println!("You'll need to install the GitHub App first.");
-            println!("Press any key to open the installation page.");
-            press_any_key().await?;
+            press_any_key("Press any key to open the installation page.").await?;
             open::that_detached(github_app_url(&client.base_url))?;
             print!("Waiting for app install");
             std::io::stdout().flush()?;
@@ -783,15 +787,13 @@ struct Tokens {
 async fn oidc_server(api_url: &Url) -> Result<String> {
     let server = tiny_http::Server::http("localhost:0").map_err(|e| anyhow!(e))?;
     let port = server.server_addr().to_ip().unwrap().port();
-    println!(
-        "Go to the following URL to authenticate: {}",
+    press_any_key("Press any key to open the login page.").await?;
+    open::that_detached(
         api_url
             .join(&format!("auth/cli?port={}", port))
             .unwrap()
-            .to_string()
-            .blue()
-            .bold()
-    );
+            .as_str(),
+    )?;
     let request = tokio::task::spawn_blocking(move || {
         server
             .incoming_requests()
@@ -880,8 +882,7 @@ async fn check_version() -> Result<()> {
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+async fn _main() -> Result<()> {
     let args = Cli::parse();
 
     if args.markdown_help {
@@ -995,8 +996,7 @@ async fn main() -> Result<()> {
                     .await?;
                 if gh_orgs.is_empty() {
                     println!("You'll need to install the GitHub app first.");
-                    println!("Press any key to open the installation page.");
-                    press_any_key().await?;
+                    press_any_key("Press any key to open the installation page.").await?;
                     open::that_detached(github_app_url(&client.base_url))?;
                     print!("Waiting for app install");
                     std::io::stdout().flush()?;
@@ -1028,9 +1028,13 @@ async fn main() -> Result<()> {
                     .json()
                     .await?;
                 println!(
-                    "Successfully linked {} to https://github.com/{}",
-                    updated_project.name,
-                    updated_project.github_repo.unwrap(),
+                    "{}",
+                    format!(
+                        "🎉 Successfully linked {} to https://github.com/{}",
+                        updated_project.name,
+                        updated_project.github_repo.unwrap(),
+                    )
+                    .green()
                 );
                 Ok(())
             }
@@ -1597,5 +1601,16 @@ async fn main() -> Result<()> {
         }
         cli::Command::Version => unreachable!(),
         cli::Command::Login => unreachable!(),
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    match _main().await {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            eprintln!("{}", e.to_string().red());
+            std::process::exit(1);
+        }
     }
 }
