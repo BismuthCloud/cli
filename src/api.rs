@@ -210,6 +210,7 @@ pub mod ws {
         FinalizedMessage {
             done: bool,
             generated_text: String,
+            commit_message: Option<String>,
             output_modified_files: Vec<ChatModifiedFile>,
             id: u64,
         },

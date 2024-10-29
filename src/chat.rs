@@ -157,12 +157,13 @@ fn process_chat_message(
                 Err(anyhow!("git diff failed (code={})", o.status))
             }
         })
-        .and_then(|s| String::from_utf8(s).map_err(|e| anyhow!(e)))?;
+        .and_then(|s| String::from_utf8(s).map_err(|e| anyhow!(e)))?
+        .replace("\t", "    ");
 
     Ok(Some(diff))
 }
 
-fn commit(repo_path: &Path) -> Result<()> {
+fn commit(repo_path: &Path, message: Option<&str>) -> Result<()> {
     Command::new("git")
         .arg("-C")
         .arg(&repo_path)
@@ -214,11 +215,16 @@ fn commit(repo_path: &Path) -> Result<()> {
         None,
     )?;
 
+    let message = match message {
+        Some(m) => m.to_string(),
+        None => format!("Bismuth: {}", changed_files.join(", ")),
+    };
+
     repo.commit(
         Some("HEAD"),
         &signature,
         &signature,
-        format!("Bismuth: {}", changed_files.join(", ")).as_str(),
+        &message,
         &tree,
         &[&parent_commit],
     )?;
@@ -647,6 +653,7 @@ impl Widget for &mut ChatHistoryWidget {
 #[derive(Clone, Debug)]
 struct DiffReviewWidget {
     diff: String,
+    commit_message: Option<String>,
     msg_id: u64,
     scroll_position: usize,
     scroll_max: usize,
@@ -654,9 +661,10 @@ struct DiffReviewWidget {
 }
 
 impl DiffReviewWidget {
-    fn new(diff: String, msg_id: u64) -> Self {
+    fn new(diff: String, msg_id: u64, commit_message: Option<String>) -> Self {
         Self {
             diff,
+            commit_message,
             msg_id,
             scroll_position: 0,
             scroll_max: 0,
@@ -838,6 +846,7 @@ impl App {
                         api::ws::ChatMessageBody::FinalizedMessage {
                             generated_text,
                             output_modified_files,
+                            commit_message,
                             id,
                             ..
                         } => {
@@ -856,7 +865,11 @@ impl App {
                             {
                                 if !diff.is_empty() {
                                     let mut state = state.lock().unwrap();
-                                    *state = AppState::ReviewDiff(DiffReviewWidget::new(diff, id));
+                                    *state = AppState::ReviewDiff(DiffReviewWidget::new(
+                                        diff,
+                                        id,
+                                        commit_message,
+                                    ));
                                 }
                             }
                         }
@@ -872,10 +885,10 @@ impl App {
                     }
                     match last.blocks.last() {
                         // Only add a new thinking block if the text has actually changed
-                        Some(MessageBlock::Thinking(last_state)) if *last_state != resp.state => {
+                        Some(MessageBlock::Thinking(last_state)) if *last_state == resp.state => {}
+                        _ => {
                             last.blocks.push(MessageBlock::Thinking(resp.state.clone()));
                         }
-                        _ => {}
                     }
                 }
                 api::ws::Message::Error(err) => {
@@ -946,7 +959,7 @@ impl App {
                 AppState::ReviewDiff(diff) => match event::read()? {
                     Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
                         KeyCode::Char('y') => {
-                            commit(&self.repo_path)?;
+                            commit(&self.repo_path, diff.commit_message.as_deref())?;
                             let client = self.client.clone();
                             let project = self.project.id;
                             let feature = self.feature.id;
