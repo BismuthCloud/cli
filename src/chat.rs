@@ -299,20 +299,15 @@ struct CodeBlock {
 impl CodeBlock {
     fn new(language: Option<&str>, raw_code: &str) -> Self {
         // TODO: BAAADDD
-        let raw_code = Box::leak(raw_code.to_string().into_boxed_str());
+        let raw_code = Box::leak(raw_code.to_string().replace("\t", "    ").into_boxed_str());
 
         let ps = two_face::syntax::extra_newlines();
         let ts = two_face::theme::extra();
         let syntax = ps
-            .find_syntax_by_extension(match language {
-                Some("python") => "py",
-                Some("go") => "go",
-                Some("markdown") => "md",
-                Some("javascript") => "js",
-                Some("typescript") => "tsx",
-                _ => "txt",
-            })
-            .unwrap();
+            .syntaxes()
+            .iter()
+            .find(|s| s.name.to_lowercase() == language.unwrap_or("").to_lowercase())
+            .unwrap_or(ps.find_syntax_plain_text());
         let mut h = HighlightLines::new(
             syntax,
             ts.get(two_face::theme::EmbeddedThemeName::Base16OceanDark),
