@@ -1514,6 +1514,18 @@ async fn _main() -> Result<()> {
                             }
                         })?;
 
+                    let sessions: Vec<api::ChatSession> = client
+                        .get(&format!(
+                            "/projects/{}/features/{}/chat/sessions",
+                            project.id, feature.id
+                        ))
+                        .send()
+                        .await?
+                        .error_body_for_status()
+                        .await?
+                        .json()
+                        .await?;
+
                     let existing_session = match session_name {
                         Some(session_name) => {
                             resolve_chat_session(&client, &project, &feature, &session_name)
@@ -1544,6 +1556,7 @@ async fn _main() -> Result<()> {
                         &current_user,
                         &project,
                         &feature,
+                        sessions,
                         &session,
                         &repo_path,
                         &client,

@@ -481,6 +481,8 @@ struct ChatHistoryWidget {
     scroll_state: ratatui::widgets::ScrollbarState,
     code_block_hitboxes: Vec<(usize, usize)>,
     message_hitboxes: Vec<(usize, usize)>,
+    sessions: Vec<api::ChatSession>,
+    session: api::ChatSession,
 
     selection: Option<((usize, usize), (usize, usize))>,
 }
@@ -488,7 +490,7 @@ struct ChatHistoryWidget {
 impl Widget for &mut ChatHistoryWidget {
     fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
         let block = Block::new()
-            .title("Chat History")
+            .title(format!("Chat History ({})", self.session.name()))
             .borders(ratatui::widgets::Borders::ALL)
             .padding(Padding::new(0, 0, 0, 0));
 
@@ -621,17 +623,25 @@ impl Widget for &mut ChatHistoryWidget {
                 &mut self.scroll_state,
             );
         } else {
+            // No messages, render the ascii art logo + recent session list
             block.render(area, buf);
-            let paragraph = Paragraph::new(
-                r#"
+            let mut lines = r#"
  ____  _                     _   _
 | __ )(_)___ _ __ ___  _   _| |_| |__
 |  _ \| / __| '_ ` _ \| | | | __| '_ \
 | |_) | \__ \ | | | | | |_| | |_| | | |
 |____/|_|___/_| |_| |_|\__,_|\__|_| |_|
-"#,
-            )
-            .style(Style::default().fg(ratatui::style::Color::Magenta));
+"#
+            .split('\n')
+            .map(|line| Line::styled(line, Style::default().fg(ratatui::style::Color::Magenta)))
+            .collect::<Vec<_>>();
+            if !self.sessions.is_empty() {
+                lines.push(Line::raw("Recent Sessions:"));
+                for session in self.sessions.iter().take(5) {
+                    lines.push(Line::raw(format!(" {}", session.name())));
+                }
+            }
+            let paragraph = Paragraph::new(lines);
             let area = centered_paragraph(&paragraph, area);
             Clear.render(area, buf);
             paragraph.render(area, buf);
@@ -701,8 +711,8 @@ impl Widget for &mut DiffReviewWidget {
 #[derive(Clone, Debug)]
 enum AppState {
     Chat,
-    Help,
-    SubmittedFeedback,
+    Popup(String, String),
+    ChangeSession(api::ChatSession),
     Exit,
     ReviewDiff(DiffReviewWidget),
 }
@@ -725,6 +735,7 @@ struct App {
     >,
     project: api::Project,
     feature: api::Feature,
+    session: api::ChatSession,
     state: Arc<Mutex<AppState>>,
     focus: bool,
 }
@@ -734,7 +745,9 @@ impl App {
         repo_path: &Path,
         project: &api::Project,
         feature: &api::Feature,
+        session: &api::ChatSession,
         current_user: &api::User,
+        sessions: Vec<api::ChatSession>,
         chat_history: &[ChatMessage],
         ws_stream: tokio_tungstenite::WebSocketStream<
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -751,6 +764,8 @@ impl App {
                 scroll_state: ratatui::widgets::ScrollbarState::default(),
                 code_block_hitboxes: vec![],
                 message_hitboxes: vec![],
+                sessions,
+                session: session.clone(),
                 selection: None,
             },
             input: tui_textarea::TextArea::default(),
@@ -758,6 +773,7 @@ impl App {
             ws_stream: Some(ws_stream),
             project: project.clone(),
             feature: feature.clone(),
+            session: session.clone(),
             state: Arc::new(Mutex::new(AppState::Chat)),
             focus: true,
         };
@@ -859,7 +875,13 @@ impl App {
                     if let Some(MessageBlock::Code(_)) = last.blocks.last() {
                         last.blocks.pop();
                     }
-                    last.blocks.push(MessageBlock::Thinking(resp.state.clone()));
+                    match last.blocks.last() {
+                        // Only add a new thinking block if the text has actually changed
+                        Some(MessageBlock::Thinking(last_state)) if *last_state != resp.state => {
+                            last.blocks.push(MessageBlock::Thinking(resp.state.clone()));
+                        }
+                        _ => {}
+                    }
                 }
                 api::ws::Message::Error(err) => {
                     return Err(anyhow!(err));
@@ -869,7 +891,7 @@ impl App {
         }
     }
 
-    async fn run(&mut self) -> Result<()> {
+    async fn run(&mut self) -> Result<Option<api::ChatSession>> {
         let mut terminal = terminal::init()?;
 
         let (mut write, mut read) = self.ws_stream.take().unwrap().split();
@@ -890,10 +912,14 @@ impl App {
             let state = { self.state.lock().unwrap().clone() };
             if let AppState::Exit = state {
                 write.close().await?;
-                return Ok(());
+                return Ok(None);
+            }
+            if let AppState::ChangeSession(new_session) = state {
+                write.close().await?;
+                return Ok(Some(new_session));
             }
             if let Ok(res) = dead_rx.try_recv() {
-                return res;
+                return res.map(|_| None);
             }
             if last_draw.elapsed() > Duration::from_millis(40) {
                 last_draw = Instant::now();
@@ -917,7 +943,10 @@ impl App {
             last_input = Instant::now();
             match state {
                 AppState::Exit => {
-                    return Ok(());
+                    return Ok(None);
+                }
+                AppState::ChangeSession(new_session) => {
+                    return Ok(Some(new_session));
                 }
                 AppState::ReviewDiff(diff) => match event::read()? {
                     Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
@@ -1033,7 +1062,7 @@ impl App {
                     },
                     _ => {}
                 },
-                AppState::Help | AppState::SubmittedFeedback => {
+                AppState::Popup(_, _) => {
                     if let Event::Key(_) = event::read()? {
                         let mut state = self.state.lock().unwrap();
                         *state = AppState::Chat;
@@ -1164,14 +1193,13 @@ impl App {
                             {
                                 self.input.input(key);
                             } else {
-                                let last_generation_done = {
-                                    let scrollback = self.chat_history.messages.lock().unwrap();
-                                    if let Some(last_msg) = scrollback.last() {
-                                        last_msg.finalized
-                                    } else {
-                                        true
-                                    }
-                                };
+                                let last_generation_done = self
+                                    .chat_history
+                                    .messages
+                                    .lock()
+                                    .unwrap()
+                                    .last()
+                                    .map_or(true, |msg| msg.finalized);
                                 if last_generation_done {
                                     self.handle_chat_input(&mut write).await?;
                                 }
@@ -1202,49 +1230,136 @@ impl App {
         }
         let input = self.input.lines().to_vec().join("\n");
         if input.starts_with('/') {
-            match input.split(' ').next().unwrap() {
-                "/exit" | "/quit" => {
-                    let mut state = self.state.lock().unwrap();
-                    *state = AppState::Exit;
-                }
-                "/help" => {
-                    let mut state = self.state.lock().unwrap();
-                    *state = AppState::Help;
-                }
-                "/docs" => {
-                    open::that_detached("https://app.bismuth.cloud/docs")?;
-                }
-                "/bug" => {
-                    let msg = input.split_once(' ').map(|(_, msg)| msg).unwrap_or("");
-                    self.client
-                        .post(&format!(
-                            "/projects/{}/features/{}/bugreport",
-                            self.project.id, self.feature.id
-                        ))
-                        .json(&json!({ "message": msg }))
-                        .send()
-                        .await?;
-                    let mut state = self.state.lock().unwrap();
-                    *state = AppState::SubmittedFeedback;
-                }
-                // eh idk if we want this, seems like a good way to lose things even with the name check
-                "/undo" => {
-                    let repo = git2::Repository::open(&self.repo_path)?;
-                    let last = repo.revparse_single("HEAD~1")?;
-                    if last.peel_to_commit()?.author().name().unwrap() == "Bismuth" {
-                        repo.reset(
-                            &repo.revparse_single("HEAD~1")?,
-                            git2::ResetType::Hard,
-                            Some(git2::build::CheckoutBuilder::new().force()),
-                        )?;
+            {
+                let mut state = self.state.lock().unwrap();
+                match input.split(' ').next().unwrap() {
+                    "/exit" | "/quit" => {
+                        *state = AppState::Exit;
                     }
-                }
-                _ => {
-                    let mut scrollback = self.chat_history.messages.lock().unwrap();
-                    scrollback.push(ChatMessage::new(
-                        ChatMessageUser::AI,
-                        "I'm sorry, I don't understand that command.",
-                    ));
+                    "/help" => {
+                        *state = AppState::Popup(
+                            "Help".to_string(),
+                            r#"/exit, /quit, or Esc: Exit the chat
+/docs: Open the Bismuth documentation
+/new-session [NAME]: Start a new session
+/change-session <NAME>: Switch to a different session
+/rename-session <NAME>: Rename the current session
+/feedback <DESCRIPTION>: Send us feedback
+/help: Show this help"#
+                                .to_string(),
+                        );
+                    }
+                    "/docs" => {
+                        open::that_detached("https://app.bismuth.cloud/docs")?;
+                    }
+                    "/new-session" => {
+                        let session_name = input.split_once(' ').map(|(_, msg)| msg);
+                        let session = self
+                            .client
+                            .post(&format!(
+                                "/projects/{}/features/{}/chat/sessions",
+                                self.project.id, self.feature.id
+                            ))
+                            .json(&json!({ "name": session_name }))
+                            .send()
+                            .await?
+                            .error_body_for_status()
+                            .await?
+                            .json()
+                            .await?;
+                        *state = AppState::ChangeSession(session);
+                    }
+                    "/rename-session" => {
+                        let name = input.split_once(' ').map(|(_, msg)| msg);
+                        match name {
+                            None => {
+                                *state = AppState::Popup(
+                                    "Error".to_string(),
+                                    "\n\n    You must provide a new name    \n\n".to_string(),
+                                );
+                            }
+                            Some(name) => {
+                                self.client
+                                    .put(&format!(
+                                        "/projects/{}/features/{}/chat/sessions/{}",
+                                        self.project.id, self.feature.id, self.session.id
+                                    ))
+                                    .json(&json!({ "name": name }))
+                                    .send()
+                                    .await?
+                                    .error_body_for_status()
+                                    .await?;
+                            }
+                        }
+                    }
+                    "/change-session" | "/switch-session" => {
+                        let name = input.split_once(' ').map(|(_, msg)| msg);
+                        match name {
+                            None => {
+                                *state = AppState::Popup(
+                                    "Error".to_string(),
+                                    "\n\n    You must provide a session name    \n\n".to_string(),
+                                );
+                            }
+                            Some(name) => {
+                                match self.chat_history.sessions.iter().find(|s| s.name() == name) {
+                                    None => {
+                                        *state = AppState::Popup(
+                                            "Error".to_string(),
+                                            "\n\n    There's no session with that name    \n\n"
+                                                .to_string(),
+                                        );
+                                    }
+                                    Some(session) => {
+                                        *state = AppState::ChangeSession(session.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "/feedback" => {
+                        let msg = input.split_once(' ').map(|(_, msg)| msg);
+                        match msg {
+                            Some(msg) => {
+                                self.client
+                                    .post(&format!(
+                                        "/projects/{}/features/{}/bugreport",
+                                        self.project.id, self.feature.id
+                                    ))
+                                    .json(&json!({ "message": msg }))
+                                    .send()
+                                    .await?;
+                                *state = AppState::Popup(
+                                    "Confirmation".to_string(),
+                                    "\n\n    Feedback submitted. Thank you!    \n\n".to_string(),
+                                );
+                            }
+                            None => {
+                                *state = AppState::Popup(
+                                "Error".to_string(),
+                                "\n\n    You must provide a message in the /feedback command    \n\n".to_string(),
+                            );
+                            }
+                        }
+                    }
+                    // eh idk if we want this, seems like a good way to lose things even with the name check
+                    "/undo" => {
+                        let repo = git2::Repository::open(&self.repo_path)?;
+                        let last = repo.revparse_single("HEAD~1")?;
+                        if last.peel_to_commit()?.author().name().unwrap() == "Bismuth" {
+                            repo.reset(
+                                &repo.revparse_single("HEAD~1")?,
+                                git2::ResetType::Hard,
+                                Some(git2::build::CheckoutBuilder::new().force()),
+                            )?;
+                        }
+                    }
+                    _ => {
+                        *state = AppState::Popup(
+                            "Error".to_string(),
+                            "\n\n    Unrecognized command    \n\n".to_string(),
+                        );
+                    }
                 }
             }
             self.clear_input();
@@ -1300,54 +1415,74 @@ pub async fn start_chat(
     current_user: &api::User,
     project: &api::Project,
     feature: &api::Feature,
+    sessions: Vec<api::ChatSession>,
     session: &api::ChatSession,
     repo_path: &Path,
     client: &APIClient,
 ) -> Result<()> {
     let repo_path = repo_path.to_path_buf();
 
-    let scrollback: Vec<ChatMessage> = client
-        .get(&format!(
-            "/projects/{}/features/{}/chat/sessions/{}/list",
-            project.id, feature.id, session.id
-        ))
-        .send()
-        .await?
-        .error_body_for_status()
-        .await?
-        .json::<Vec<api::ChatMessage>>()
-        .await?
-        .into_iter()
-        .map(Into::into)
-        .collect();
+    let mut session = session.clone();
 
-    let url = websocket_url(&client.base_url);
-    let (mut ws_stream, _) = connect_async(url).await.expect("Failed to connect");
+    let status = loop {
+        let scrollback: Vec<ChatMessage> = client
+            .get(&format!(
+                "/projects/{}/features/{}/chat/sessions/{}/list",
+                project.id, feature.id, session.id
+            ))
+            .send()
+            .await?
+            .error_body_for_status()
+            .await?
+            .json::<Vec<api::ChatMessage>>()
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect();
 
-    ws_stream
-        .send(Message::Text(
-            serde_json::to_string(&api::ws::Message::Auth(api::ws::AuthMessage {
-                feature_id: feature.id.clone(),
-                session_id: session.id.clone(),
-                token: client.token.clone(),
-            }))?
-            .into(),
-        ))
-        .await?;
+        let url = websocket_url(&client.base_url);
+        let (mut ws_stream, _) = connect_async(url).await.expect("Failed to connect");
 
-    debug!("Connected to chat");
+        ws_stream
+            .send(Message::Text(
+                serde_json::to_string(&api::ws::Message::Auth(api::ws::AuthMessage {
+                    feature_id: feature.id.clone(),
+                    session_id: session.id.clone(),
+                    token: client.token.clone(),
+                }))?
+                .into(),
+            ))
+            .await?;
 
-    let mut app = App::new(
-        &repo_path,
-        project,
-        feature,
-        current_user,
-        &scrollback,
-        ws_stream,
-        client,
-    );
+        debug!("Connected to chat");
 
-    let status = app.run().await;
+        let mut app = App::new(
+            &repo_path,
+            project,
+            feature,
+            &session,
+            current_user,
+            sessions.clone(),
+            &scrollback,
+            ws_stream,
+            client,
+        );
+
+        let status = app.run().await;
+        match status {
+            Ok(Some(new_session)) => {
+                session = new_session;
+                continue;
+            }
+            Ok(None) => {
+                break Ok(());
+            }
+            Err(e) => {
+                break Err(e);
+            }
+        }
+    };
+
     terminal::restore();
 
     status
@@ -1384,23 +1519,9 @@ fn ui(
         AppState::ReviewDiff(diff_widget) => {
             frame.render_widget(diff_widget, frame.area());
         }
-        AppState::Help => {
-            let help_text = r#"/exit, /quit, or Esc: Exit the chat
-/docs: Open the Bismuth documentation
-/feedback {description}: Send us feedback
-/help: Show this help"#;
-            let paragraph = Paragraph::new(help_text).block(Block::bordered().title(vec![
-                "Help ".into(),
-                Span::styled("(press any key to close)", ratatui::style::Color::Yellow),
-            ]));
-            let area = centered_paragraph(&paragraph, frame.area());
-            frame.render_widget(Clear, area);
-            frame.render_widget(paragraph, area);
-        }
-        AppState::SubmittedFeedback => {
-            let text = "\n\n    Feedback submitted. Thank you!    \n\n";
-            let paragraph = Paragraph::new(text).block(Block::bordered().title(vec![
-                "Confirmation ".into(),
+        AppState::Popup(title, text) => {
+            let paragraph = Paragraph::new(text.clone()).block(Block::bordered().title(vec![
+                format!("{} ", title).into(),
                 Span::styled("(press any key to close)", ratatui::style::Color::Yellow),
             ]));
             let area = centered_paragraph(&paragraph, frame.area());
