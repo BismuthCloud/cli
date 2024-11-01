@@ -491,7 +491,13 @@ struct ChatHistoryWidget {
 impl Widget for &mut ChatHistoryWidget {
     fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
         let block = Block::new()
-            .title(format!("Chat History ({})", self.session.name()))
+            .title(format!(
+                "Chat History{}",
+                match &self.session._name {
+                    Some(name) => format!(" ({})", name),
+                    None => "".to_string(),
+                }
+            ))
             .borders(ratatui::widgets::Borders::ALL)
             .padding(Padding::new(0, 0, 0, 0));
 
@@ -627,9 +633,9 @@ impl Widget for &mut ChatHistoryWidget {
             // No messages, render the ascii art logo + recent session list
             block.render(area, buf);
             let mut lines = r#"
- ____  _                     _   _
-| __ )(_)___ _ __ ___  _   _| |_| |__
-|  _ \| / __| '_ ` _ \| | | | __| '_ \
+ ____  _                     _   _     
+| __ )(_)___ _ __ ___  _   _| |_| |__  
+|  _ \| / __| '_ ` _ \| | | | __| '_ \ 
 | |_) | \__ \ | | | | | |_| | |_| | | |
 |____/|_|___/_| |_| |_|\__,_|\__|_| |_|
 "#
@@ -641,6 +647,8 @@ impl Widget for &mut ChatHistoryWidget {
                 for session in self.sessions.iter().take(5) {
                     lines.push(Line::raw(format!(" {}", session.name())));
                 }
+                lines.push(Line::raw(""));
+                lines.push(Line::raw("Use `/session <name>` to change session"));
             }
             let paragraph = Paragraph::new(lines);
             let area = centered_paragraph(&paragraph, area);
@@ -1250,7 +1258,7 @@ impl App {
                             r#"/exit, /quit, or Esc: Exit the chat
 /docs: Open the Bismuth documentation
 /new-session [NAME]: Start a new session
-/change-session <NAME>: Switch to a different session
+/session <NAME>: Switch to a different session
 /rename-session <NAME>: Rename the current session
 /feedback <DESCRIPTION>: Send us feedback
 /help: Show this help"#
@@ -1300,7 +1308,7 @@ impl App {
                             }
                         }
                     }
-                    "/change-session" | "/switch-session" => {
+                    "/change-session" | "/switch-session" | "/session" => {
                         let name = input.split_once(' ').map(|(_, msg)| msg);
                         match name {
                             None => {

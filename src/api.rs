@@ -129,7 +129,7 @@ impl Display for GitHubAppInstall {
 pub struct ChatSession {
     pub id: u64,
     #[serde(rename = "name")]
-    _name: Option<String>,
+    pub _name: Option<String>,
 }
 
 impl ChatSession {
