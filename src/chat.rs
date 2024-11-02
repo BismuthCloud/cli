@@ -970,11 +970,6 @@ impl App {
                 api::ws::Message::ResponseState(resp) => {
                     let mut scrollback = scrollback.lock().unwrap();
                     let last = scrollback.last_mut().unwrap();
-                    // sorta hacky, but if the last block is code when we start thinking
-                    // remove it as it's a small partial message
-                    if let Some(MessageBlock::Code(_)) = last.blocks.last() {
-                        last.blocks.pop();
-                    }
                     match last.blocks.last() {
                         // Only add a new thinking block if the text has actually changed
                         Some(MessageBlock::Thinking(last_state)) if *last_state == resp.state => {}
