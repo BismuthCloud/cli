@@ -1,4 +1,5 @@
 use std::{
+    cell::OnceCell,
     collections::{HashSet, VecDeque},
     path::{Path, PathBuf},
     process::Command,
@@ -297,77 +298,117 @@ enum ChatMessageUser {
 
 #[derive(Clone, Debug, Derivative)]
 #[derivative(PartialEq)]
+struct OwnedLine {
+    spans: Vec<(String, Style)>,
+}
+
+impl From<Vec<(&str, Style)>> for OwnedLine {
+    fn from(spans: Vec<(&str, Style)>) -> Self {
+        Self {
+            spans: spans
+                .into_iter()
+                .map(|(s, style)| (s.into(), style))
+                .collect(),
+        }
+    }
+}
+
+impl From<&str> for OwnedLine {
+    fn from(s: &str) -> Self {
+        Self {
+            spans: vec![(s.into(), Style::default())],
+        }
+    }
+}
+
+impl<'a> OwnedLine {
+    fn as_line(&'a self) -> Line<'a> {
+        Line::from(
+            self.spans
+                .iter()
+                .map(|(s, style)| Span::styled(s, *style))
+                .collect::<Vec<_>>(),
+        )
+    }
+}
+
+#[derive(Clone, Debug, Derivative)]
+#[derivative(PartialEq)]
 struct CodeBlock {
     language: String,
-    /// The syntax highlighted code
-    lines: Vec<Line<'static>>,
+    raw_code: String,
+
+    /// Cached syntax highlighted code
+    #[derivative(PartialEq = "ignore")]
+    lines: OnceCell<Vec<OwnedLine>>,
+
     #[derivative(PartialEq = "ignore")]
     folded: bool,
 }
 
 impl CodeBlock {
     fn new(language: Option<&str>, raw_code: &str) -> Self {
-        let raw_code = Box::leak(raw_code.to_string().replace("\t", "    ").into_boxed_str());
-
-        let ps = two_face::syntax::extra_newlines();
-        let ts = two_face::theme::extra();
-        let syntax = ps
-            .syntaxes()
-            .iter()
-            .find(|s| s.name.to_lowercase() == language.unwrap_or("").to_lowercase())
-            .unwrap_or(ps.find_syntax_plain_text());
-        let mut h = HighlightLines::new(
-            syntax,
-            ts.get(two_face::theme::EmbeddedThemeName::Base16OceanDark),
-        );
-        let lines = LinesWithEndings::from(raw_code)
-            .map(|line| {
-                Line::from(
-                    h.highlight_line(line, &ps)
-                        .unwrap()
-                        .into_iter()
-                        .map(|(syntect_style, content)| {
-                            Span::styled(
-                                content,
-                                Style {
-                                    fg: match syntect_style.foreground {
-                                        // TODO: detect terminal and disable highlighting if 24 bit color is unsupported
-                                        syntect::highlighting::Color { r, g, b, a } => {
-                                            Some(ratatui::style::Color::Rgb(r, g, b))
-                                        }
-                                        _ => None,
-                                    },
-                                    bg: None,
-                                    underline_color: None,
-                                    add_modifier: ratatui::style::Modifier::empty(),
-                                    sub_modifier: ratatui::style::Modifier::empty(),
-                                },
-                            )
-                        })
-                        .collect::<Vec<Span>>(),
-                )
-            })
-            .collect();
-
         Self {
             language: language.unwrap_or("").to_string(),
-            lines,
+            raw_code: raw_code.to_string().replace("\t", "    "),
+            lines: OnceCell::new(),
             folded: true,
         }
+    }
+    fn lines(&self) -> &Vec<OwnedLine> {
+        self.lines.get_or_init(|| {
+            let ps = two_face::syntax::extra_newlines();
+            let ts = two_face::theme::extra();
+            let syntax = ps
+                .syntaxes()
+                .iter()
+                .find(|s| s.name.to_lowercase() == self.language.to_lowercase())
+                .unwrap_or(ps.find_syntax_plain_text());
+            let mut h = HighlightLines::new(
+                syntax,
+                ts.get(two_face::theme::EmbeddedThemeName::Base16OceanDark),
+            );
+            LinesWithEndings::from(&self.raw_code)
+                .map(|line| {
+                    OwnedLine::from(
+                        h.highlight_line(line, &ps)
+                            .unwrap()
+                            .into_iter()
+                            .map(|(syntect_style, content)| {
+                                (
+                                    content,
+                                    Style {
+                                        fg: match syntect_style.foreground {
+                                            // TODO: detect terminal and disable highlighting if 24 bit color is unsupported
+                                            syntect::highlighting::Color { r, g, b, a } => {
+                                                Some(ratatui::style::Color::Rgb(r, g, b))
+                                            }
+                                        },
+                                        bg: None,
+                                        underline_color: None,
+                                        add_modifier: ratatui::style::Modifier::empty(),
+                                        sub_modifier: ratatui::style::Modifier::empty(),
+                                    },
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect()
+        })
     }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 enum MessageBlock {
-    Text(Vec<Line<'static>>),
+    Text(Vec<OwnedLine>),
     Thinking(String),
     Code(CodeBlock),
 }
 
 impl MessageBlock {
     fn new_text(text: &str) -> Self {
-        let text = Box::leak(text.to_string().into_boxed_str());
-        Self::Text(text.lines().map(|line| Line::raw(line)).collect::<Vec<_>>())
+        Self::Text(vec![OwnedLine::from(text)])
     }
 }
 
@@ -386,16 +427,16 @@ impl ChatMessage {
             .replace("\n<BCODE>\n", "\n")
             .replace("\n</BCODE>\n", "\n");
         let mut blocks = Self::parse_md(&content);
-
         let prefix_spans = Self::format_user(&user);
 
         if let Some(MessageBlock::Text(text_lines)) = blocks.first_mut() {
             text_lines[0].spans = prefix_spans
+                .spans
                 .into_iter()
                 .chain(text_lines[0].spans.drain(..))
                 .collect();
         } else {
-            blocks.insert(0, MessageBlock::Text(vec![Line::from(prefix_spans)]));
+            blocks.insert(0, MessageBlock::Text(vec![prefix_spans]));
         }
 
         Self {
@@ -408,24 +449,24 @@ impl ChatMessage {
         }
     }
 
-    fn format_user<'a>(user: &ChatMessageUser) -> Vec<Span<'a>> {
-        let mut res = Vec::with_capacity(3);
+    fn format_user(user: &ChatMessageUser) -> OwnedLine {
+        let mut spans = Vec::with_capacity(3);
         // Copy
         if copypasta::ClipboardContext::new().is_ok() {
-            res.push("⎘ ".into())
+            spans.push(("⎘ ", ratatui::style::Style::default()));
         }
-        res.push(match user {
-            ChatMessageUser::AI => ratatui::text::Span::styled(
+        spans.push(match user {
+            ChatMessageUser::AI => (
                 "Bismuth",
                 ratatui::style::Style::default().fg(ratatui::style::Color::Magenta),
             ),
-            ChatMessageUser::User(ref user) => ratatui::text::Span::styled(
-                user.clone(),
+            ChatMessageUser::User(ref user) => (
+                user,
                 ratatui::style::Style::default().fg(ratatui::style::Color::Cyan),
             ),
         });
-        res.push(": ".into());
-        res
+        spans.push((": ".into(), ratatui::style::Style::default()));
+        OwnedLine::from(spans)
     }
 
     fn parse_md(text: &str) -> Vec<MessageBlock> {
@@ -459,29 +500,31 @@ impl ChatMessage {
     }
 
     pub fn append(&mut self, token: &str) {
-        let content = self.raw.clone() + token;
-        let mut blocks = Self::parse_md(&content);
+        self.raw += token;
+        let mut blocks = Self::parse_md(&self.raw);
         let prefix_spans = Self::format_user(&self.user);
 
         if let Some(MessageBlock::Text(text_lines)) = blocks.first_mut() {
             text_lines[0].spans = prefix_spans
+                .spans
                 .into_iter()
                 .chain(text_lines[0].spans.drain(..))
                 .collect();
         } else {
-            blocks.insert(0, MessageBlock::Text(vec![Line::from(prefix_spans)]));
+            blocks.insert(0, MessageBlock::Text(vec![prefix_spans]));
         }
 
         // Update any existing blocks
         for (i, (existing, new)) in self.blocks.iter_mut().zip(blocks.iter()).enumerate() {
             if existing != new {
                 *existing = new.clone();
+                self.block_line_cache.1.truncate(i);
             }
-            self.block_line_cache.1.truncate(i);
         }
 
         // And add any new blocks
-        self.blocks.extend_from_slice(&blocks[self.blocks.len()..]);
+        self.blocks
+            .extend_from_slice(&blocks[self.blocks.len().min(blocks.len())..]);
     }
 }
 
@@ -552,7 +595,9 @@ impl Widget for &mut ChatHistoryWidget {
                         .enumerate()
                         .flat_map(|(idx, block)| {
                             let mut lines = match block {
-                                MessageBlock::Text(lines) => lines.clone(),
+                                MessageBlock::Text(lines) => {
+                                    lines.iter().map(OwnedLine::as_line).collect()
+                                }
                                 MessageBlock::Thinking(detail) => {
                                     let is_last = idx == message.blocks.len() - 1;
                                     let indicator = if is_last {
@@ -588,10 +633,10 @@ impl Widget for &mut ChatHistoryWidget {
                                                 .fg(ratatui::style::Color::Yellow),
                                         )]
                                     } else {
-                                        code.lines
+                                        code.lines()
                                             .iter()
                                             .map(|line| {
-                                                let mut indented = line.clone();
+                                                let mut indented = line.as_line();
                                                 indented.spans.insert(0, "│ ".into());
                                                 indented
                                             })
@@ -866,6 +911,14 @@ impl App {
                                 scrollback.push(ChatMessage::new(ChatMessageUser::AI, ""));
                             }
                             let last_msg = scrollback.last_mut().unwrap();
+                            loop {
+                                match last_msg.blocks.last() {
+                                    Some(MessageBlock::Thinking(_)) => {
+                                        last_msg.blocks.pop();
+                                    }
+                                    _ => break,
+                                }
+                            }
                             last_msg.append(&token.text);
                         }
                         api::ws::ChatMessageBody::PartialMessage { partial_message } => {
@@ -1253,7 +1306,6 @@ impl App {
                             }
                         }
                         _ => {
-                            // TODO: shift-enter for newlines?
                             self.input.input(key);
                         }
                     },
