@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use copypasta::ClipboardProvider;
+use derivative::Derivative;
 use futures::{
     stream::{SplitSink, SplitStream},
     SinkExt, StreamExt, TryStreamExt,
@@ -294,17 +295,18 @@ enum ChatMessageUser {
     AI,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Derivative)]
+#[derivative(PartialEq)]
 struct CodeBlock {
     language: String,
     /// The syntax highlighted code
     lines: Vec<Line<'static>>,
+    #[derivative(PartialEq = "ignore")]
     folded: bool,
 }
 
 impl CodeBlock {
     fn new(language: Option<&str>, raw_code: &str) -> Self {
-        // TODO: BAAADDD
         let raw_code = Box::leak(raw_code.to_string().replace("\t", "    ").into_boxed_str());
 
         let ps = two_face::syntax::extra_newlines();
@@ -355,7 +357,7 @@ impl CodeBlock {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 enum MessageBlock {
     Text(Vec<Line<'static>>),
     Thinking(String),
@@ -379,37 +381,11 @@ struct ChatMessage {
 }
 
 impl ChatMessage {
-    fn new(user: ChatMessageUser, content: &str) -> Self {
+    pub fn new(user: ChatMessageUser, content: &str) -> Self {
         let content = content
             .replace("\n<BCODE>\n", "\n")
             .replace("\n</BCODE>\n", "\n");
-        let root = markdown::to_mdast(&content, &markdown::ParseOptions::default()).unwrap();
-        let mut blocks: Vec<_> = match root.children() {
-            Some(nodes) => nodes
-                .into_iter()
-                .filter_map(|block| match block {
-                    markdown::mdast::Node::Code(code) => {
-                        if code.value.len() > 0 {
-                            Some(MessageBlock::Code(CodeBlock::new(
-                                code.lang.as_deref(),
-                                &code.value,
-                            )))
-                        } else {
-                            None
-                        }
-                    }
-                    _ => {
-                        // Slice from content based on position instead of node.to_string()
-                        // so that we get things like bullet points, list numbering, etc.
-                        let position = block.position().unwrap();
-                        Some(MessageBlock::new_text(
-                            &content[position.start.offset..position.end.offset],
-                        ))
-                    }
-                })
-                .collect(),
-            None => vec![],
-        };
+        let mut blocks = Self::parse_md(&content);
 
         let prefix_spans = Self::format_user(&user);
 
@@ -427,7 +403,8 @@ impl ChatMessage {
             raw: content.to_string(),
             finalized: false,
             blocks,
-            block_line_cache: (0, vec![]),
+            // Cache the result of line wrapping for each block. This is surprisingly expensive
+            block_line_cache: (0, vec![]), // width, list of rendered line counts for each block
         }
     }
 
@@ -449,6 +426,62 @@ impl ChatMessage {
         });
         res.push(": ".into());
         res
+    }
+
+    fn parse_md(text: &str) -> Vec<MessageBlock> {
+        let root = markdown::to_mdast(text, &markdown::ParseOptions::default()).unwrap();
+        match root.children() {
+            Some(nodes) => nodes
+                .into_iter()
+                .filter_map(|block| match block {
+                    markdown::mdast::Node::Code(code) => {
+                        if code.value.len() > 0 {
+                            Some(MessageBlock::Code(CodeBlock::new(
+                                code.lang.as_deref(),
+                                &code.value,
+                            )))
+                        } else {
+                            None
+                        }
+                    }
+                    _ => {
+                        // Slice from content based on position instead of node.to_string()
+                        // so that we get things like bullet points, list numbering, etc.
+                        let position = block.position().unwrap();
+                        Some(MessageBlock::new_text(
+                            &text[position.start.offset..position.end.offset],
+                        ))
+                    }
+                })
+                .collect(),
+            None => vec![],
+        }
+    }
+
+    pub fn append(&mut self, token: &str) {
+        let content = self.raw.clone() + token;
+        let mut blocks = Self::parse_md(&content);
+        let prefix_spans = Self::format_user(&self.user);
+
+        if let Some(MessageBlock::Text(text_lines)) = blocks.first_mut() {
+            text_lines[0].spans = prefix_spans
+                .into_iter()
+                .chain(text_lines[0].spans.drain(..))
+                .collect();
+        } else {
+            blocks.insert(0, MessageBlock::Text(vec![Line::from(prefix_spans)]));
+        }
+
+        // Update any existing blocks
+        for (i, (existing, new)) in self.blocks.iter_mut().zip(blocks.iter()).enumerate() {
+            if existing != new {
+                *existing = new.clone();
+            }
+            self.block_line_cache.1.truncate(i);
+        }
+
+        // And add any new blocks
+        self.blocks.extend_from_slice(&blocks[self.blocks.len()..]);
     }
 }
 
@@ -833,9 +866,7 @@ impl App {
                                 scrollback.push(ChatMessage::new(ChatMessageUser::AI, ""));
                             }
                             let last_msg = scrollback.last_mut().unwrap();
-                            let mut new_raw = last_msg.raw.clone() + &token.text;
-                            new_raw = new_raw.replace("\n<BCODE>\n", "\n");
-                            *last_msg = ChatMessage::new(last_msg.user.clone(), &new_raw);
+                            last_msg.append(&token.text);
                         }
                         api::ws::ChatMessageBody::PartialMessage { partial_message } => {
                             let partial_message = partial_message
