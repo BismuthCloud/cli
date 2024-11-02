@@ -873,6 +873,8 @@ impl App {
     fn clear_input(&mut self) {
         self.input = tui_textarea::TextArea::default();
         self.input.set_block(Block::bordered().title("Message"));
+        self.input
+            .set_placeholder_text(" Use Alt/Option + Enter to add a newline");
         self.input.set_cursor_line_style(Style::default());
     }
 
