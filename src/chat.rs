@@ -1654,6 +1654,8 @@ mod terminal {
         crossterm::{
             event::{
                 DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
+                KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+                PushKeyboardEnhancementFlags,
             },
             execute,
             terminal::{
@@ -1673,6 +1675,7 @@ mod terminal {
             EnterAlternateScreen,
             EnableMouseCapture,
             EnableFocusChange,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
         )?;
         let backend = CrosstermBackend::new(io::stdout());
         Terminal::new(backend)
@@ -1696,6 +1699,7 @@ mod terminal {
             LeaveAlternateScreen,
             DisableMouseCapture,
             DisableFocusChange,
+            PopKeyboardEnhancementFlags,
         ) {
             eprintln!("error leaving alternate screen: {err}");
         }
