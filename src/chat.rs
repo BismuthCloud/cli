@@ -410,7 +410,7 @@ enum MessageBlock {
 
 impl MessageBlock {
     fn new_text(text: &str) -> Self {
-        Self::Text(vec![OwnedLine::from(text)])
+        Self::Text(text.split('\n').map(|line| OwnedLine::from(line)).collect())
     }
 }
 
@@ -899,7 +899,6 @@ struct App {
     feature: api::Feature,
     session: api::ChatSession,
     state: Arc<Mutex<AppState>>,
-    focus: bool,
 }
 
 impl App {
@@ -937,7 +936,6 @@ impl App {
             feature: feature.clone(),
             session: session.clone(),
             state: Arc::new(Mutex::new(AppState::Chat)),
-            focus: true,
         };
         x.clear_input();
         x
@@ -997,9 +995,6 @@ impl App {
                             last_msg.append(&token.text);
                         }
                         api::ws::ChatMessageBody::PartialMessage { partial_message } => {
-                            let partial_message = partial_message
-                                .replace("\n<BCODE>\n", "\n")
-                                .replace("\n</BCODE>\n", "\n");
                             let mut scrollback = scrollback.lock().unwrap();
                             let msg = ChatMessage::new(ChatMessageUser::AI, &partial_message);
                             // Basically just to support snapshot resumption in daneel
@@ -1020,9 +1015,6 @@ impl App {
                             {
                                 let mut scrollback = scrollback.lock().unwrap();
                                 let last = scrollback.last_mut().unwrap();
-                                let generated_text = generated_text
-                                    .replace("\n<BCODE>\n", "\n")
-                                    .replace("\n</BCODE>\n", "\n");
                                 *last = ChatMessage::new(ChatMessageUser::AI, &generated_text);
                                 last.finalized = true;
                             }
@@ -1096,7 +1088,6 @@ impl App {
                 terminal.draw(|frame| {
                     ui(
                         frame,
-                        self.focus,
                         self.state.clone(),
                         &mut self.chat_history,
                         &self.input,
@@ -1275,12 +1266,6 @@ impl App {
                     _ => {}
                 },
                 AppState::Chat => match event::read()? {
-                    Event::FocusGained => {
-                        self.focus = true;
-                    }
-                    Event::FocusLost => {
-                        self.focus = false;
-                    }
                     Event::Mouse(mouse) => match mouse.kind {
                         event::MouseEventKind::ScrollUp => {
                             self.chat_history.scroll_position =
@@ -1689,7 +1674,6 @@ pub async fn start_chat(
 
 fn ui(
     frame: &mut ratatui::Frame,
-    focus: bool,
     state: Arc<Mutex<AppState>>,
     chat_history: &mut ChatHistoryWidget,
     input: &tui_textarea::TextArea,
@@ -1761,9 +1745,8 @@ mod terminal {
         backend::CrosstermBackend,
         crossterm::{
             event::{
-                DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
-                KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-                PushKeyboardEnhancementFlags,
+                DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags,
+                PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
             },
             execute,
             terminal::{
@@ -1782,7 +1765,6 @@ mod terminal {
             io::stdout(),
             EnterAlternateScreen,
             EnableMouseCapture,
-            EnableFocusChange,
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
         )?;
         let backend = CrosstermBackend::new(io::stdout());
@@ -1806,7 +1788,6 @@ mod terminal {
             io::stdout(),
             LeaveAlternateScreen,
             DisableMouseCapture,
-            DisableFocusChange,
             PopKeyboardEnhancementFlags,
         ) {
             eprintln!("error leaving alternate screen: {err}");
