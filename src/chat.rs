@@ -20,10 +20,12 @@ use ratatui::{
         cursor::SetCursorStyle,
         event::{self, Event, KeyCode, MouseButton},
     },
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Margin, Rect},
     style::{Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Clear, Padding, Paragraph, Scrollbar, StatefulWidget, Widget},
+    widgets::{
+        Block, Clear, Padding, Paragraph, Scrollbar, ScrollbarState, StatefulWidget, Widget,
+    },
 };
 use serde_json::json;
 use syntect::easy::HighlightLines;
@@ -574,8 +576,7 @@ impl Widget for &mut ChatHistoryWidget {
                     None => "".to_string(),
                 }
             ))
-            .borders(ratatui::widgets::Borders::ALL)
-            .padding(Padding::new(0, 0, 0, 0));
+            .borders(ratatui::widgets::Borders::ALL);
 
         let mut line_idx = 0;
 
@@ -695,7 +696,10 @@ impl Widget for &mut ChatHistoryWidget {
             if self.scroll_position == old_scroll_max {
                 self.scroll_position = self.scroll_max;
             }
-            self.scroll_state = self.scroll_state.content_length(self.scroll_max);
+            self.scroll_state = self
+                .scroll_state
+                .position(self.scroll_position)
+                .content_length(self.scroll_max);
 
             self.code_block_hitboxes = code_block_hitboxes;
             self.message_hitboxes = message_hitboxes;
@@ -708,10 +712,9 @@ impl Widget for &mut ChatHistoryWidget {
                 &mut self.scroll_state,
             );
         } else {
-            // No messages, render the ascii art logo + recent session list
+            // No messages, render the ascii art logo + /session message
             block.render(area, buf);
-            let mut lines = r#"
- ____  _                     _   _     
+            let mut lines = r#" ____  _                     _   _     
 | __ )(_)___ _ __ ___  _   _| |_| |__  
 |  _ \| / __| '_ ` _ \| | | | __| '_ \ 
 | |_) | \__ \ | | | | | |_| | |_| | | |
@@ -720,16 +723,9 @@ impl Widget for &mut ChatHistoryWidget {
             .split('\n')
             .map(|line| Line::styled(line, Style::default().fg(ratatui::style::Color::Magenta)))
             .collect::<Vec<_>>();
-            if !self.sessions.is_empty() {
-                lines.push(Line::raw("Recent Sessions:"));
-                for session in self.sessions.iter().take(5) {
-                    lines.push(Line::raw(format!(" {}", session.name())));
-                }
-                lines.push(Line::raw(""));
-                lines.push(Line::raw("Use `/session <name>` to change session"));
-            }
+            lines.push(Line::raw("Use `/session` to change session"));
             let paragraph = Paragraph::new(lines);
-            let area = centered_paragraph(&paragraph, area);
+            let area = centered_paragraph(&paragraph, area.inner(Margin::new(0, 1)));
             Clear.render(area, buf);
             paragraph.render(area, buf);
         }
@@ -741,9 +737,12 @@ struct DiffReviewWidget {
     diff: String,
     commit_message: Option<String>,
     msg_id: u64,
-    scroll_position: usize,
-    scroll_max: usize,
-    scroll_state: ratatui::widgets::ScrollbarState,
+    v_scroll_position: usize,
+    v_scroll_max: usize,
+    v_scroll_state: ratatui::widgets::ScrollbarState,
+    h_scroll_position: usize,
+    h_scroll_max: usize,
+    h_scroll_state: ratatui::widgets::ScrollbarState,
 }
 
 impl DiffReviewWidget {
@@ -752,9 +751,12 @@ impl DiffReviewWidget {
             diff,
             commit_message,
             msg_id,
-            scroll_position: 0,
-            scroll_max: 0,
-            scroll_state: ratatui::widgets::ScrollbarState::default(),
+            v_scroll_position: 0,
+            v_scroll_max: 0,
+            v_scroll_state: ratatui::widgets::ScrollbarState::default(),
+            h_scroll_position: 0,
+            h_scroll_max: 0,
+            h_scroll_state: ratatui::widgets::ScrollbarState::default(),
         }
     }
 }
@@ -779,11 +781,27 @@ impl Widget for &mut DiffReviewWidget {
                 "Review Diff ".into(),
                 Span::styled("(y to commit, n to revert)", ratatui::style::Color::Yellow),
             ]))
-            .scroll((self.scroll_position as u16, 0));
+            .scroll((self.v_scroll_position as u16, self.h_scroll_position as u16));
 
         let nlines = self.diff.lines().count();
-        self.scroll_max = nlines.max(area.height as usize) - (area.height as usize);
-        self.scroll_state = self.scroll_state.content_length(self.scroll_max);
+        self.v_scroll_max = nlines.max(area.height as usize) - (area.height as usize);
+        self.v_scroll_state = self
+            .v_scroll_state
+            .position(self.v_scroll_position)
+            .content_length(self.v_scroll_max);
+
+        self.h_scroll_max = self
+            .diff
+            .lines()
+            .map(|l| l.len())
+            .max()
+            .unwrap_or(0)
+            .max(area.width as usize)
+            - (area.width as usize);
+        self.h_scroll_state = self
+            .h_scroll_state
+            .position(self.h_scroll_position)
+            .content_length(self.h_scroll_max);
 
         let area = centered_paragraph(&paragraph, area);
         Clear.render(area, buf);
@@ -792,7 +810,60 @@ impl Widget for &mut DiffReviewWidget {
             Scrollbar::new(ratatui::widgets::ScrollbarOrientation::VerticalRight),
             area,
             buf,
-            &mut self.scroll_state,
+            &mut self.v_scroll_state,
+        );
+        StatefulWidget::render(
+            Scrollbar::new(ratatui::widgets::ScrollbarOrientation::HorizontalBottom),
+            area,
+            buf,
+            &mut self.h_scroll_state,
+        );
+    }
+}
+
+#[derive(Clone, Debug)]
+struct SelectSessionWidget {
+    sessions: Vec<api::ChatSession>,
+    current_session: api::ChatSession,
+    selected_idx: usize,
+    v_scroll_position: usize,
+}
+
+impl Widget for &mut SelectSessionWidget {
+    fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
+        let mut lines = vec![];
+        for (idx, session) in self.sessions.iter().enumerate() {
+            let mut line = Line::raw(session.name());
+            if idx == self.selected_idx {
+                line = line.style(Style::default().bg(ratatui::style::Color::Blue));
+            }
+            lines.push(line);
+        }
+        let paragraph = Paragraph::new(lines)
+            .block(
+                Block::bordered()
+                    .title("Select Session")
+                    .padding(Padding::new(1, 0, 0, 0)),
+            )
+            .scroll((self.v_scroll_position as u16, 0));
+
+        if self.selected_idx >= (area.height - 2) as usize + self.v_scroll_position {
+            self.v_scroll_position = self.selected_idx - (area.height - 2) as usize + 1;
+        } else if self.selected_idx < self.v_scroll_position {
+            self.v_scroll_position = self.selected_idx;
+        }
+        let mut v_scroll_state = ScrollbarState::default()
+            .content_length(self.sessions.len() - (area.height as usize - 2))
+            .position(self.v_scroll_position);
+
+        let area = centered_paragraph(&paragraph, area);
+        Clear.render(area, buf);
+        paragraph.render(area, buf);
+        StatefulWidget::render(
+            Scrollbar::new(ratatui::widgets::ScrollbarOrientation::VerticalRight),
+            area,
+            buf,
+            &mut v_scroll_state,
         );
     }
 }
@@ -800,10 +871,12 @@ impl Widget for &mut DiffReviewWidget {
 #[derive(Clone, Debug)]
 enum AppState {
     Chat,
+    SelectSession(SelectSessionWidget),
     Popup(String, String),
+    ReviewDiff(DiffReviewWidget),
+    // Sort of a hacky way to feed state from the event input loop back up
     ChangeSession(api::ChatSession),
     Exit,
-    ReviewDiff(DiffReviewWidget),
 }
 
 struct App {
@@ -1033,6 +1106,7 @@ impl App {
             if !event::poll(Duration::from_millis(40))? {
                 continue;
             }
+            // TODO: bracketed paste mode
             if input_delay.len() == 3 {
                 input_delay.pop_front();
             }
@@ -1094,37 +1168,46 @@ impl App {
                         KeyCode::Char(' ') => {
                             let mut state = self.state.lock().unwrap();
                             if let AppState::ReviewDiff(diff_widget) = &mut *state {
-                                diff_widget.scroll_position = diff_widget
-                                    .scroll_position
+                                diff_widget.v_scroll_position = diff_widget
+                                    .v_scroll_position
                                     .saturating_add(10)
-                                    .clamp(0, diff_widget.scroll_max);
-                                diff_widget.scroll_state = diff_widget
-                                    .scroll_state
-                                    .position(diff_widget.scroll_position);
+                                    .clamp(0, diff_widget.v_scroll_max);
                             }
                         }
                         KeyCode::Down => {
                             let mut state = self.state.lock().unwrap();
                             if let AppState::ReviewDiff(diff_widget) = &mut *state {
-                                diff_widget.scroll_position = diff_widget
-                                    .scroll_position
+                                diff_widget.v_scroll_position = diff_widget
+                                    .v_scroll_position
                                     .saturating_add(1)
-                                    .clamp(0, diff_widget.scroll_max);
-                                diff_widget.scroll_state = diff_widget
-                                    .scroll_state
-                                    .position(diff_widget.scroll_position);
+                                    .clamp(0, diff_widget.v_scroll_max);
                             }
                         }
                         KeyCode::Up => {
                             let mut state = self.state.lock().unwrap();
                             if let AppState::ReviewDiff(diff_widget) = &mut *state {
-                                diff_widget.scroll_position = diff_widget
-                                    .scroll_position
+                                diff_widget.v_scroll_position = diff_widget
+                                    .v_scroll_position
                                     .saturating_sub(1)
-                                    .clamp(0, diff_widget.scroll_max);
-                                diff_widget.scroll_state = diff_widget
-                                    .scroll_state
-                                    .position(diff_widget.scroll_position);
+                                    .clamp(0, diff_widget.v_scroll_max);
+                            }
+                        }
+                        KeyCode::Left => {
+                            let mut state = self.state.lock().unwrap();
+                            if let AppState::ReviewDiff(diff_widget) = &mut *state {
+                                diff_widget.h_scroll_position = diff_widget
+                                    .h_scroll_position
+                                    .saturating_sub(1)
+                                    .clamp(0, diff_widget.h_scroll_max);
+                            }
+                        }
+                        KeyCode::Right => {
+                            let mut state = self.state.lock().unwrap();
+                            if let AppState::ReviewDiff(diff_widget) = &mut *state {
+                                diff_widget.h_scroll_position = diff_widget
+                                    .h_scroll_position
+                                    .saturating_add(1)
+                                    .clamp(0, diff_widget.h_scroll_max);
                             }
                         }
                         _ => {}
@@ -1134,25 +1217,19 @@ impl App {
                             // TODO: if cursor row within message field, self.input.scroll instead
                             let mut state = self.state.lock().unwrap();
                             if let AppState::ReviewDiff(diff_widget) = &mut *state {
-                                diff_widget.scroll_position = diff_widget
-                                    .scroll_position
+                                diff_widget.v_scroll_position = diff_widget
+                                    .v_scroll_position
                                     .saturating_sub(1)
-                                    .clamp(0, diff_widget.scroll_max);
-                                diff_widget.scroll_state = diff_widget
-                                    .scroll_state
-                                    .position(diff_widget.scroll_position);
+                                    .clamp(0, diff_widget.v_scroll_max);
                             }
                         }
                         event::MouseEventKind::ScrollDown => {
                             let mut state = self.state.lock().unwrap();
                             if let AppState::ReviewDiff(diff_widget) = &mut *state {
-                                diff_widget.scroll_position = diff_widget
-                                    .scroll_position
+                                diff_widget.v_scroll_position = diff_widget
+                                    .v_scroll_position
                                     .saturating_add(1)
-                                    .clamp(0, diff_widget.scroll_max);
-                                diff_widget.scroll_state = diff_widget
-                                    .scroll_state
-                                    .position(diff_widget.scroll_position);
+                                    .clamp(0, diff_widget.v_scroll_max);
                             }
                         }
                         _ => {}
@@ -1165,6 +1242,38 @@ impl App {
                         *state = AppState::Chat;
                     }
                 }
+                AppState::SelectSession(widget) => match event::read()? {
+                    Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
+                        KeyCode::Up => {
+                            let mut state = self.state.lock().unwrap();
+                            if let AppState::SelectSession(widget) = &mut *state {
+                                widget.selected_idx = widget.selected_idx.saturating_sub(1);
+                            }
+                        }
+                        KeyCode::Down => {
+                            if let AppState::SelectSession(widget) =
+                                &mut *self.state.lock().unwrap()
+                            {
+                                widget.selected_idx = widget
+                                    .selected_idx
+                                    .saturating_add(1)
+                                    .clamp(0, widget.sessions.len() - 1);
+                            }
+                        }
+                        KeyCode::Esc => {
+                            let mut state = self.state.lock().unwrap();
+                            *state = AppState::Chat;
+                        }
+                        KeyCode::Enter => {
+                            let widget = widget;
+                            let session = widget.sessions[widget.selected_idx].clone();
+                            let mut state = self.state.lock().unwrap();
+                            *state = AppState::ChangeSession(session);
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                },
                 AppState::Chat => match event::read()? {
                     Event::FocusGained => {
                         self.focus = true;
@@ -1176,10 +1285,6 @@ impl App {
                         event::MouseEventKind::ScrollUp => {
                             self.chat_history.scroll_position =
                                 self.chat_history.scroll_position.saturating_sub(1);
-                            self.chat_history.scroll_state = self
-                                .chat_history
-                                .scroll_state
-                                .position(self.chat_history.scroll_position);
                         }
                         event::MouseEventKind::ScrollDown => {
                             self.chat_history.scroll_position = self
@@ -1187,10 +1292,6 @@ impl App {
                                 .scroll_position
                                 .saturating_add(1)
                                 .clamp(0, self.chat_history.scroll_max);
-                            self.chat_history.scroll_state = self
-                                .chat_history
-                                .scroll_state
-                                .position(self.chat_history.scroll_position);
                         }
                         /*
                         event::MouseEventKind::Down(btn) if btn == MouseButton::Left => {
@@ -1338,7 +1439,7 @@ impl App {
                             r#"/exit, /quit, or Esc: Exit the chat
 /docs: Open the Bismuth documentation
 /new-session [NAME]: Start a new session
-/session <NAME>: Switch to a different session
+/session [NAME]: Switch to a different session
 /rename-session <NAME>: Rename the current session
 /feedback <DESCRIPTION>: Send us feedback
 /help: Show this help"#
@@ -1392,10 +1493,12 @@ impl App {
                         let name = input.split_once(' ').map(|(_, msg)| msg);
                         match name {
                             None => {
-                                *state = AppState::Popup(
-                                    "Error".to_string(),
-                                    "\n\n    You must provide a session name    \n\n".to_string(),
-                                );
+                                *state = AppState::SelectSession(SelectSessionWidget {
+                                    sessions: self.chat_history.sessions.clone(),
+                                    current_session: self.session.clone(),
+                                    selected_idx: 0,
+                                    v_scroll_position: 0,
+                                })
                             }
                             Some(name) => {
                                 match self.chat_history.sessions.iter().find(|s| s.name() == name) {
@@ -1623,6 +1726,9 @@ fn ui(
             let area = centered_paragraph(&paragraph, frame.area());
             frame.render_widget(Clear, area);
             frame.render_widget(paragraph, area);
+        }
+        AppState::SelectSession(widget) => {
+            frame.render_widget(widget, frame.area());
         }
         _ => {}
     }
