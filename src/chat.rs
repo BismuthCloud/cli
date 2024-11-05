@@ -337,6 +337,7 @@ impl<'a> OwnedLine {
 #[derive(Clone, Debug, Derivative)]
 #[derivative(PartialEq)]
 struct CodeBlock {
+    filename: Option<String>,
     language: String,
     raw_code: String,
 
@@ -349,8 +350,9 @@ struct CodeBlock {
 }
 
 impl CodeBlock {
-    fn new(language: Option<&str>, raw_code: &str) -> Self {
+    fn new(filename: Option<&str>, language: Option<&str>, raw_code: &str) -> Self {
         Self {
+            filename: filename.map(|f| f.to_string()),
             language: language.unwrap_or("").to_string(),
             raw_code: raw_code.to_string().replace("\t", "    "),
             lines: OnceCell::new(),
@@ -477,11 +479,21 @@ impl ChatMessage {
             Some(nodes) => nodes
                 .into_iter()
                 .filter_map(|block| match block {
-                    markdown::mdast::Node::Code(code) => {
-                        if code.value.len() > 0 {
+                    markdown::mdast::Node::Code(code_block) => {
+                        if code_block.value.len() > 0 {
+                            let fn_line = code_block.value.lines().next().unwrap();
+                            let mut filename = None;
+                            let mut code = code_block.value.clone();
+                            if fn_line.starts_with("FILENAME:") {
+                                filename = Some(
+                                    fn_line.trim_start_matches("FILENAME:").trim().to_string(),
+                                );
+                                code = code.lines().skip(1).collect::<Vec<_>>().join("\n");
+                            }
                             Some(MessageBlock::Code(CodeBlock::new(
-                                code.lang.as_deref(),
-                                &code.value,
+                                filename.as_deref(),
+                                code_block.lang.as_deref(),
+                                &code,
                             )))
                         } else {
                             None
@@ -623,13 +635,17 @@ impl Widget for &mut ChatHistoryWidget {
                                 MessageBlock::Code(code) => {
                                     let code_block_lines = if code.folded {
                                         vec![Line::styled(
-                                            title_case(
-                                                &format!(
-                                                    "{} code block (click to expand)",
-                                                    &code.language
+                                            if let Some(filename) = &code.filename {
+                                                format!("Change to {} (click to expand)", &filename)
+                                            } else {
+                                                title_case(
+                                                    &format!(
+                                                        "{} code block (click to expand)",
+                                                        &code.language
+                                                    )
+                                                    .trim(),
                                                 )
-                                                .trim(),
-                                            ),
+                                            },
                                             ratatui::style::Style::default()
                                                 .fg(ratatui::style::Color::Yellow),
                                         )]
