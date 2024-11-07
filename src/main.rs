@@ -1510,7 +1510,7 @@ async fn _main() -> Result<()> {
                             if o.status.success() {
                                 Ok(())
                             } else {
-                                Err(anyhow!("Failed to fetch ({})", o.status))
+                                Err(anyhow!("Failed to `git fetch` ({})", o.status))
                             }
                         })?;
 

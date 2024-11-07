@@ -182,7 +182,7 @@ pub mod ws {
         pub feature_id: u64,
     }
 
-    #[derive(Debug, Serialize, Deserialize)]
+    #[derive(Clone, Debug, Serialize, Deserialize)]
     #[serde(rename_all = "camelCase")]
     pub struct ChatModifiedFile {
         pub name: String,
@@ -236,12 +236,27 @@ pub mod ws {
         pub attempt: u64,
     }
 
+    #[derive(Clone, Debug, Deserialize)]
+    pub struct RunCommandMessage {
+        pub output_modified_files: Vec<ChatModifiedFile>,
+        pub command: String,
+    }
+
+    #[derive(Debug, Serialize)]
+    pub struct RunCommandResponse {
+        pub exit_code: i32,
+        pub stdout: String,
+        pub stderr: String,
+    }
+
     #[derive(Debug)]
     pub enum Message {
         Auth(AuthMessage),
         Ping,
         Chat(ChatMessage),
         ResponseState(ResponseStateMessage),
+        RunCommand(RunCommandMessage),
+        RunCommandResponse(RunCommandResponse),
         Error(String),
     }
 
@@ -266,6 +281,12 @@ pub mod ws {
                     let mut state = serializer.serialize_struct("Message", 2)?;
                     state.serialize_field("type", "CHAT")?;
                     state.serialize_field("chat", chat)?;
+                    state.end()
+                }
+                Message::RunCommandResponse(ref response) => {
+                    let mut state = serializer.serialize_struct("Message", 4)?;
+                    state.serialize_field("type", "RUN_COMMAND_RESPONSE")?;
+                    state.serialize_field("runCommandResponse", response)?;
                     state.end()
                 }
                 // ResponseState is one-way, no need to serialize
@@ -303,6 +324,16 @@ pub mod ws {
                     )
                     .map_err(serde::de::Error::custom)?;
                     Ok(Message::ResponseState(state))
+                }
+                Some("RUN_COMMAND") => {
+                    let command = serde_json::from_value(
+                        value
+                            .get("run_command")
+                            .ok_or(serde::de::Error::custom("missing inner run command"))?
+                            .clone(),
+                    )
+                    .map_err(serde::de::Error::custom)?;
+                    Ok(Message::RunCommand(command))
                 }
                 None if value.get("error").is_some() => {
                     // Handle generic {"error": "asdf"} messages that come if the backend raises an error

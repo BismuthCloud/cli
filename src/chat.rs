@@ -30,14 +30,17 @@ use ratatui::{
 use serde_json::json;
 use syntect::easy::HighlightLines;
 use syntect::util::LinesWithEndings;
-use tokio::net::TcpStream;
+use tokio::{net::TcpStream, sync::mpsc};
 use tokio_tungstenite::{
     connect_async, tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream,
 };
 use url::Url;
 
 use crate::{
-    api::{self, ws::ChatModifiedFile},
+    api::{
+        self,
+        ws::{ChatModifiedFile, RunCommandResponse},
+    },
     APIClient, ResponseErrorExt as _,
 };
 
@@ -967,6 +970,7 @@ impl App {
 
     async fn read_loop(
         read: &mut SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+        write: &mpsc::Sender<tokio_tungstenite::tungstenite::Message>,
         scrollback: Arc<Mutex<Vec<ChatMessage>>>,
         repo_path: &Path,
         state: Arc<Mutex<AppState>>,
@@ -1061,6 +1065,48 @@ impl App {
                         }
                     }
                 }
+                api::ws::Message::RunCommand(cmd) => {
+                    let mut scrollback = scrollback.lock().unwrap();
+                    let last = scrollback.last_mut().unwrap();
+                    last.blocks.push(MessageBlock::Thinking(format!(
+                        "Running command: {}",
+                        cmd.command
+                    )));
+                    let should_revert =
+                        process_chat_message(&repo_path, &cmd.output_modified_files)?.is_some();
+                    let repo_path = repo_path.to_path_buf();
+                    let write_ = write.clone();
+                    tokio::spawn(async move {
+                        let proc = tokio::process::Command::new("sh")
+                            .arg("-c")
+                            .arg(&cmd.command)
+                            .current_dir(&repo_path)
+                            .output()
+                            .await;
+                        if should_revert {
+                            let _ = revert(&repo_path);
+                        }
+                        let _ = write_
+                            .send(Message::Text(
+                                serde_json::to_string(&api::ws::Message::RunCommandResponse(
+                                    RunCommandResponse {
+                                        exit_code: proc
+                                            .as_ref()
+                                            .map_or(1, |p| p.status.code().unwrap_or(1)),
+                                        stdout: proc.as_ref().map_or("".to_string(), |p| {
+                                            String::from_utf8_lossy(&p.stdout).to_string()
+                                        }),
+                                        stderr: match proc {
+                                            Ok(p) => String::from_utf8_lossy(&p.stderr).to_string(),
+                                            Err(e) => e.to_string(),
+                                        },
+                                    },
+                                ))
+                                .unwrap(),
+                            ))
+                            .await;
+                    });
+                }
                 api::ws::Message::Error(err) => {
                     return Err(anyhow!(err));
                 }
@@ -1072,14 +1118,24 @@ impl App {
     async fn run(&mut self) -> Result<Option<api::ChatSession>> {
         let mut terminal = terminal::init()?;
 
-        let (mut write, mut read) = self.ws_stream.take().unwrap().split();
+        let (mut write_sink, mut read) = self.ws_stream.take().unwrap().split();
         let (dead_tx, mut dead_rx) = tokio::sync::oneshot::channel();
+
+        let (write, mut write_source) = mpsc::channel(1);
+        tokio::spawn(async move {
+            while let Some(msg) = write_source.recv().await {
+                write_sink.send(msg).await.unwrap();
+            }
+            write_sink.close().await.unwrap();
+        });
 
         let scrollback = self.chat_history.messages.clone();
         let repo_path = self.repo_path.clone();
         let state = self.state.clone();
+        let write_ = write.clone();
         tokio::spawn(async move {
-            let res = Self::read_loop(&mut read, scrollback.clone(), &repo_path, state).await;
+            let res =
+                Self::read_loop(&mut read, &write_, scrollback.clone(), &repo_path, state).await;
             let _ = dead_tx.send(res);
         });
 
@@ -1089,11 +1145,9 @@ impl App {
         loop {
             let state = { self.state.lock().unwrap().clone() };
             if let AppState::Exit = state {
-                write.close().await?;
                 return Ok(None);
             }
             if let AppState::ChangeSession(new_session) = state {
-                write.close().await?;
                 return Ok(Some(new_session));
             }
             if let Ok(res) = dead_rx.try_recv() {
@@ -1110,7 +1164,9 @@ impl App {
                     )
                 })?;
             }
-            if !event::poll(Duration::from_millis(40))? {
+            if !tokio::task::spawn_blocking(move || event::poll(Duration::from_millis(40)))
+                .await??
+            {
                 continue;
             }
             // TODO: bracketed paste mode
@@ -1400,7 +1456,7 @@ impl App {
                                     .last()
                                     .map_or(true, |msg| msg.finalized);
                                 if last_generation_done {
-                                    self.handle_chat_input(&mut write).await?;
+                                    self.handle_chat_input(&write).await?;
                                 }
                             }
                         }
@@ -1416,12 +1472,7 @@ impl App {
 
     async fn handle_chat_input(
         &mut self,
-        write: &mut SplitSink<
-            tokio_tungstenite::WebSocketStream<
-                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-            >,
-            Message,
-        >,
+        write: &mpsc::Sender<tokio_tungstenite::tungstenite::Message>,
     ) -> Result<()> {
         if self.input.is_empty() {
             return Ok(());
