@@ -478,7 +478,7 @@ impl ChatMessage {
 
     fn parse_md(text: &str) -> Vec<MessageBlock> {
         let root = markdown::to_mdast(text, &markdown::ParseOptions::default()).unwrap();
-        match root.children() {
+        let mut blocks = match root.children() {
             Some(nodes) => nodes
                 .into_iter()
                 .filter_map(|block| match block {
@@ -513,7 +513,11 @@ impl ChatMessage {
                 })
                 .collect(),
             None => vec![],
+        };
+        if let Some(MessageBlock::Code(code_block)) = blocks.last_mut() {
+            code_block.folded = false;
         }
+        blocks
     }
 
     pub fn append(&mut self, token: &str) {
@@ -993,16 +997,19 @@ impl App {
             }
             let data: api::ws::Message =
                 serde_json::from_str(&message.into_text().unwrap()).unwrap();
+            // Daneel snapshot resumption
+            {
+                let mut scrollback = scrollback.lock().unwrap();
+                if scrollback.len() == 0 {
+                    scrollback.push(ChatMessage::new(ChatMessageUser::AI, ""));
+                }
+            }
             match data {
                 api::ws::Message::Chat(api::ws::ChatMessage { message, .. }) => {
                     let stuff: api::ws::ChatMessageBody = serde_json::from_str(&message).unwrap();
                     match stuff {
                         api::ws::ChatMessageBody::StreamingToken { token, .. } => {
                             let mut scrollback = scrollback.lock().unwrap();
-                            // Daneel snapshot resumption
-                            if scrollback.len() == 0 {
-                                scrollback.push(ChatMessage::new(ChatMessageUser::AI, ""));
-                            }
                             let last_msg = scrollback.last_mut().unwrap();
                             loop {
                                 match last_msg.blocks.last() {
@@ -1017,13 +1024,8 @@ impl App {
                         api::ws::ChatMessageBody::PartialMessage { partial_message } => {
                             let mut scrollback = scrollback.lock().unwrap();
                             let msg = ChatMessage::new(ChatMessageUser::AI, &partial_message);
-                            // Basically just to support snapshot resumption in daneel
-                            if scrollback.len() > 0 {
-                                let last = scrollback.last_mut().unwrap();
-                                *last = msg;
-                            } else {
-                                scrollback.push(msg);
-                            }
+                            let last = scrollback.last_mut().unwrap();
+                            *last = msg;
                         }
                         api::ws::ChatMessageBody::FinalizedMessage {
                             generated_text,
@@ -1072,8 +1074,7 @@ impl App {
                         "Running command: {}",
                         cmd.command
                     )));
-                    let should_revert =
-                        process_chat_message(&repo_path, &cmd.output_modified_files)?.is_some();
+                    process_chat_message(&repo_path, &cmd.output_modified_files)?;
                     let repo_path = repo_path.to_path_buf();
                     let write_ = write.clone();
                     tokio::spawn(async move {
@@ -1083,9 +1084,6 @@ impl App {
                             .current_dir(&repo_path)
                             .output()
                             .await;
-                        if should_revert {
-                            let _ = revert(&repo_path);
-                        }
                         let _ = write_
                             .send(Message::Text(
                                 serde_json::to_string(&api::ws::Message::RunCommandResponse(
