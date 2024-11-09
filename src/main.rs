@@ -280,7 +280,7 @@ async fn get_project_and_feature_for_repo(
     client: &APIClient,
     repo: &Path,
 ) -> Result<(api::Project, api::Feature)> {
-    if !repo.join(".git").is_dir() {
+    if !repo.join(".git").exists() {
         return Err(anyhow!(
             "Unable to determine project and feature (path is not a git repository)"
         ));
@@ -341,7 +341,7 @@ async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Resul
             return Err(anyhow!("Repo does not exist"));
         }
         let repo = std::fs::canonicalize(repo)?;
-        if !repo.join(".git").is_dir() {
+        if !repo.join(".git").exists() {
             return Err(anyhow!("Directory is not a git repository"));
         }
 

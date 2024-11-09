@@ -432,7 +432,8 @@ impl ChatMessage {
     pub fn new(user: ChatMessageUser, content: &str) -> Self {
         let content = content
             .replace("\n<BCODE>\n", "\n")
-            .replace("\n</BCODE>\n", "\n");
+            .replace("\n</BCODE>\n", "\n")
+            .replace("\t", "    ");
         let mut blocks = Self::parse_md(&content);
         let prefix_spans = Self::format_user(&user);
 
