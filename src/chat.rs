@@ -876,7 +876,7 @@ impl Widget for &mut SelectSessionWidget {
             self.v_scroll_position = self.selected_idx;
         }
         let mut v_scroll_state = ScrollbarState::default()
-            .content_length(self.sessions.len() - (area.height as usize - 2))
+            .content_length(self.sessions.len().saturating_sub(area.height as usize - 2))
             .position(self.v_scroll_position);
 
         let area = centered_paragraph(&paragraph, area);
