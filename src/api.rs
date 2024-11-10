@@ -188,6 +188,7 @@ pub mod ws {
         pub name: String,
         pub project_path: String,
         pub content: String,
+        pub deleted: Option<bool>,
     }
 
     #[derive(Debug, Serialize, Deserialize)]

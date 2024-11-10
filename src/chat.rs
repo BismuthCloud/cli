@@ -1639,6 +1639,7 @@ impl App {
                         name: path.file_name().unwrap().to_str().unwrap().to_string(),
                         project_path: path.to_str().unwrap().to_string(),
                         content,
+                        deleted: Some(!self.repo_path.join(&path).exists()),
                     }
                 })
                 .collect();
