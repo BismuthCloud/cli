@@ -1443,6 +1443,7 @@ impl App {
                             // ALT+enter for manual newlines
                             // or if this is a paste (in which case input delay is very short)
                             if key.modifiers.contains(event::KeyModifiers::ALT)
+                                || key.modifiers.contains(event::KeyModifiers::SHIFT)
                                 || input_delay.iter().all(|d| d < &Duration::from_millis(1))
                             {
                                 self.input.input(key);
