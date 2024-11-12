@@ -104,33 +104,37 @@ fn list_changed_files(repo_path: &Path) -> Result<Vec<PathBuf>> {
 fn process_chat_message(
     repo_path: &Path,
     modified_files: &[ChatModifiedFile],
+    temp_commit: bool,
 ) -> Result<Option<String>> {
-    let repo_path = std::fs::canonicalize(repo_path)?;
-    let repo = git2::Repository::open(&repo_path)?;
-
     if modified_files.len() == 0 {
         return Ok(None);
     }
 
+    let repo_path = std::fs::canonicalize(repo_path)?;
+    let repo = git2::Repository::open(&repo_path)?;
+
     let mut index = repo.index()?;
-    index.add_all(&["*"], git2::IndexAddOption::DEFAULT, None)?;
-    index.write()?;
-    let tree_id = index.write_tree()?;
-    let tree = repo.find_tree(tree_id)?;
-    let head = repo.head()?;
-    let parent_commit = repo.find_commit(head.target().unwrap())?;
-    let signature = git2::Signature::now(
-        "bismuthdev[bot]",
-        "bismuthdev[bot]@users.noreply.github.com",
-    )?;
-    repo.commit(
-        Some("HEAD"),
-        &signature,
-        &signature,
-        "Bismuth Temp Commit",
-        &tree,
-        &[&parent_commit],
-    )?;
+
+    if temp_commit {
+        index.add_all(&["*"], git2::IndexAddOption::DEFAULT, None)?;
+        index.write()?;
+        let tree_id = index.write_tree()?;
+        let tree = repo.find_tree(tree_id)?;
+        let head = repo.head()?;
+        let parent_commit = repo.find_commit(head.target().unwrap())?;
+        let signature = git2::Signature::now(
+            "bismuthdev[bot]",
+            "bismuthdev[bot]@users.noreply.github.com",
+        )?;
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "Bismuth Temp Commit",
+            &tree,
+            &[&parent_commit],
+        )?;
+    }
 
     for mf in modified_files {
         trace!("Writing file: {}", mf.project_path);
@@ -162,8 +166,7 @@ fn process_chat_message(
                 Err(anyhow!("git diff failed (code={})", o.status))
             }
         })
-        .and_then(|s| String::from_utf8(s).map_err(|e| anyhow!(e)))?
-        .replace("\t", "    ");
+        .and_then(|s| String::from_utf8(s).map_err(|e| anyhow!(e)))?;
 
     Ok(Some(diff))
 }
@@ -310,7 +313,7 @@ impl From<Vec<(&str, Style)>> for OwnedLine {
         Self {
             spans: spans
                 .into_iter()
-                .map(|(s, style)| (s.into(), style))
+                .map(|(s, style)| (s.replace("\t", "    ").into(), style))
                 .collect(),
         }
     }
@@ -319,7 +322,7 @@ impl From<Vec<(&str, Style)>> for OwnedLine {
 impl From<&str> for OwnedLine {
     fn from(s: &str) -> Self {
         Self {
-            spans: vec![(s.into(), Style::default())],
+            spans: vec![(s.replace("\t", "    ").into(), Style::default())],
         }
     }
 }
@@ -448,9 +451,8 @@ struct ChatMessage {
 impl ChatMessage {
     pub fn new(user: ChatMessageUser, content: &str) -> Self {
         let content = content
-            .replace("\n<BCODE>\n", "\n")
-            .replace("\n</BCODE>\n", "\n")
-            .replace("\t", "    ");
+            .replace("\n<BCODE>", "\n")
+            .replace("\n</BCODE>", "\n");
         let mut blocks = Self::parse_md(&content);
         let prefix_spans = Self::format_user(&user);
 
@@ -540,6 +542,10 @@ impl ChatMessage {
 
     pub fn append(&mut self, token: &str) {
         self.raw += token;
+        self.raw = self
+            .raw
+            .replace("\n<BCODE>", "\n")
+            .replace("\n</BCODE>", "\n");
         let mut blocks = Self::parse_md(&self.raw);
         let prefix_spans = Self::format_user(&self.user);
 
@@ -669,6 +675,13 @@ impl Widget for &mut ChatHistoryWidget {
                                         Some(true) => ('✓', ratatui::style::Color::Green),
                                         Some(false) => ('✗', ratatui::style::Color::Red),
                                     };
+                                    let h_border = Line::styled(
+                                        (0..(area.width as usize - 2))
+                                            .map(|_| "─")
+                                            .collect::<String>(),
+                                        ratatui::style::Style::default()
+                                            .fg(ratatui::style::Color::DarkGray),
+                                    );
                                     let mut lines = vec![Line::styled(
                                         format!(
                                             "  Running command '{}' {}",
@@ -676,16 +689,25 @@ impl Widget for &mut ChatHistoryWidget {
                                         ),
                                         ratatui::style::Style::default().fg(color),
                                     )];
-                                    let output_lines = command
-                                        .output
-                                        .lines()
-                                        .map(|l| &l[..(area.width as usize - 2).min(l.len())])
-                                        .collect::<Vec<_>>();
-                                    lines.extend(
-                                        (&output_lines[output_lines.len().saturating_sub(5)..])
-                                            .iter()
-                                            .map(|l| Line::styled(*l, Style::default().fg(color))),
-                                    );
+                                    if !command.output.is_empty() {
+                                        lines.push(h_border.clone());
+                                        let output_lines = command
+                                            .output
+                                            .lines()
+                                            .map(|l| {
+                                                format!(
+                                                    " {}",
+                                                    &l[..(area.width as usize - 3).min(l.len())]
+                                                )
+                                            })
+                                            .collect::<Vec<_>>();
+                                        lines.extend(
+                                            (&output_lines[output_lines.len().saturating_sub(5)..])
+                                                .iter()
+                                                .map(|l| Line::raw(l.clone())),
+                                        );
+                                        lines.push(h_border);
+                                    }
                                     lines
                                 }
                                 MessageBlock::Code(code) => {
@@ -1090,7 +1112,8 @@ impl App {
                             }
 
                             if let Some(diff) =
-                                process_chat_message(&repo_path, &output_modified_files).unwrap()
+                                process_chat_message(&repo_path, &output_modified_files, true)
+                                    .unwrap()
                             {
                                 if !diff.is_empty() {
                                     let mut state = state.lock().unwrap();
@@ -1116,7 +1139,7 @@ impl App {
                     }
                 }
                 api::ws::Message::RunCommand(cmd) => {
-                    //process_chat_message(&repo_path, &cmd.output_modified_files)?;
+                    process_chat_message(&repo_path, &cmd.output_modified_files, false)?;
                     let repo_path = repo_path.to_path_buf();
                     let write_ = write.clone();
                     let scrollback_ = scrollback.clone();
@@ -1137,7 +1160,6 @@ impl App {
                             .current_dir(&repo_path)
                             .spawn()
                             .unwrap();
-                        dbg!("after spwan");
 
                         let stdout = LinesStream::new(
                             tokio::io::BufReader::new(proc.stdout.take().unwrap()).lines(),
@@ -1147,7 +1169,6 @@ impl App {
                         );
                         let mut merged_stream = tokio_stream::StreamExt::merge(stdout, stderr);
                         while let Some(line) = merged_stream.next().await {
-                            dbg!(&line);
                             cmd_block.output += &line.unwrap();
                             cmd_block.output += "\n";
                             {
