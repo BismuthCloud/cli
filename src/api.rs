@@ -246,8 +246,7 @@ pub mod ws {
     #[derive(Debug, Serialize)]
     pub struct RunCommandResponse {
         pub exit_code: i32,
-        pub stdout: String,
-        pub stderr: String,
+        pub output: String,
     }
 
     #[derive(Debug)]

@@ -10,10 +10,7 @@ use std::{
 use anyhow::{anyhow, Result};
 use copypasta::ClipboardProvider;
 use derivative::Derivative;
-use futures::{
-    stream::{SplitSink, SplitStream},
-    SinkExt, StreamExt, TryStreamExt,
-};
+use futures::{stream::SplitStream, SinkExt, StreamExt, TryStreamExt};
 use log::{debug, trace};
 use ratatui::{
     crossterm::{
@@ -30,7 +27,8 @@ use ratatui::{
 use serde_json::json;
 use syntect::easy::HighlightLines;
 use syntect::util::LinesWithEndings;
-use tokio::{net::TcpStream, sync::mpsc};
+use tokio::{io::AsyncBufReadExt as _, net::TcpStream, sync::mpsc};
+use tokio_stream::wrappers::LinesStream;
 use tokio_tungstenite::{
     connect_async, tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream,
 };
@@ -406,11 +404,30 @@ impl CodeBlock {
     }
 }
 
+#[derive(Clone, Debug, Derivative)]
+#[derivative(PartialEq)]
+struct RunCommandBlock {
+    command: String,
+    output: String,
+    success: Option<bool>,
+}
+
+impl RunCommandBlock {
+    fn new(command: &str) -> Self {
+        Self {
+            command: command.to_string(),
+            output: "".to_string(),
+            success: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum MessageBlock {
     Text(Vec<OwnedLine>),
     Thinking(String),
     Code(CodeBlock),
+    Command(RunCommandBlock),
 }
 
 impl MessageBlock {
@@ -582,8 +599,6 @@ struct ChatHistoryWidget {
     message_hitboxes: Vec<(usize, usize)>,
     sessions: Vec<api::ChatSession>,
     session: api::ChatSession,
-
-    selection: Option<((usize, usize), (usize, usize))>,
 }
 
 impl Widget for &mut ChatHistoryWidget {
@@ -639,6 +654,39 @@ impl Widget for &mut ChatHistoryWidget {
                                             ratatui::style::Color::Green
                                         }),
                                     )]
+                                }
+                                MessageBlock::Command(command) => {
+                                    let (indicator, color) = match command.success {
+                                        None => (
+                                            vec!['|', '\\', '-', '/'][SystemTime::now()
+                                                .duration_since(UNIX_EPOCH)
+                                                .unwrap()
+                                                .subsec_millis()
+                                                as usize
+                                                / 251],
+                                            ratatui::style::Color::LightGreen,
+                                        ),
+                                        Some(true) => ('✓', ratatui::style::Color::Green),
+                                        Some(false) => ('✗', ratatui::style::Color::Red),
+                                    };
+                                    let mut lines = vec![Line::styled(
+                                        format!(
+                                            "  Running command '{}' {}",
+                                            command.command, indicator
+                                        ),
+                                        ratatui::style::Style::default().fg(color),
+                                    )];
+                                    let output_lines = command
+                                        .output
+                                        .lines()
+                                        .map(|l| &l[..(area.width as usize - 2).min(l.len())])
+                                        .collect::<Vec<_>>();
+                                    lines.extend(
+                                        (&output_lines[output_lines.len().saturating_sub(5)..])
+                                            .iter()
+                                            .map(|l| Line::styled(*l, Style::default().fg(color))),
+                                    );
+                                    lines
                                 }
                                 MessageBlock::Code(code) => {
                                     let code_block_lines = if code.folded {
@@ -951,7 +999,6 @@ impl App {
                 message_hitboxes: vec![],
                 sessions,
                 session: session.clone(),
-                selection: None,
             },
             input: tui_textarea::TextArea::default(),
             client: client.clone(),
@@ -1069,36 +1116,61 @@ impl App {
                     }
                 }
                 api::ws::Message::RunCommand(cmd) => {
-                    let mut scrollback = scrollback.lock().unwrap();
-                    let last = scrollback.last_mut().unwrap();
-                    last.blocks.push(MessageBlock::Thinking(format!(
-                        "Running command: {}",
-                        cmd.command
-                    )));
-                    process_chat_message(&repo_path, &cmd.output_modified_files)?;
+                    //process_chat_message(&repo_path, &cmd.output_modified_files)?;
                     let repo_path = repo_path.to_path_buf();
                     let write_ = write.clone();
+                    let scrollback_ = scrollback.clone();
                     tokio::spawn(async move {
-                        let proc = tokio::process::Command::new("sh")
+                        let mut cmd_block = RunCommandBlock::new(&cmd.command);
+                        {
+                            let mut scrollback = scrollback_.lock().unwrap();
+                            let last = scrollback.last_mut().unwrap();
+                            last.blocks.push(MessageBlock::Command(cmd_block.clone()));
+                        }
+
+                        let mut proc = tokio::process::Command::new("sh")
                             .arg("-c")
                             .arg(&cmd.command)
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::piped())
+                            .stderr(std::process::Stdio::piped())
                             .current_dir(&repo_path)
-                            .output()
-                            .await;
+                            .spawn()
+                            .unwrap();
+                        dbg!("after spwan");
+
+                        let stdout = LinesStream::new(
+                            tokio::io::BufReader::new(proc.stdout.take().unwrap()).lines(),
+                        );
+                        let stderr = LinesStream::new(
+                            tokio::io::BufReader::new(proc.stderr.take().unwrap()).lines(),
+                        );
+                        let mut merged_stream = tokio_stream::StreamExt::merge(stdout, stderr);
+                        while let Some(line) = merged_stream.next().await {
+                            dbg!(&line);
+                            cmd_block.output += &line.unwrap();
+                            cmd_block.output += "\n";
+                            {
+                                let mut scrollback = scrollback_.lock().unwrap();
+                                let last = scrollback.last_mut().unwrap();
+                                *last.blocks.last_mut().unwrap() =
+                                    MessageBlock::Command(cmd_block.clone());
+                            }
+                        }
+                        let exit_status = proc.wait().await.unwrap();
+                        cmd_block.success = Some(exit_status.success());
+                        {
+                            let mut scrollback = scrollback_.lock().unwrap();
+                            let last = scrollback.last_mut().unwrap();
+                            *last.blocks.last_mut().unwrap() =
+                                MessageBlock::Command(cmd_block.clone());
+                        }
                         let _ = write_
                             .send(Message::Text(
                                 serde_json::to_string(&api::ws::Message::RunCommandResponse(
                                     RunCommandResponse {
-                                        exit_code: proc
-                                            .as_ref()
-                                            .map_or(1, |p| p.status.code().unwrap_or(1)),
-                                        stdout: proc.as_ref().map_or("".to_string(), |p| {
-                                            String::from_utf8_lossy(&p.stdout).to_string()
-                                        }),
-                                        stderr: match proc {
-                                            Ok(p) => String::from_utf8_lossy(&p.stderr).to_string(),
-                                            Err(e) => e.to_string(),
-                                        },
+                                        exit_code: exit_status.code().unwrap(),
+                                        output: cmd_block.output.clone(),
                                     },
                                 ))
                                 .unwrap(),
@@ -1349,30 +1421,7 @@ impl App {
                                 .saturating_add(1)
                                 .clamp(0, self.chat_history.scroll_max);
                         }
-                        /*
-                        event::MouseEventKind::Down(btn) if btn == MouseButton::Left => {
-                            let col = mouse.column as usize - 2; // border + padding
-                            let row = mouse.row as usize - 2 + self.chat_history.scroll_position;
-                            self.chat_history.selection = Some(((col, row), (col, row)));
-                        }
-                        event::MouseEventKind::Drag(btn) if btn == MouseButton::Left => {
-                            let col = mouse.column as usize - 2;
-                            let row = mouse.row as usize - 2 + self.chat_history.scroll_position;
-                            if let Some((start, _)) = self.chat_history.selection {
-                                self.chat_history.selection = Some((start, (col, row)));
-                            } else {
-                                // dont think this should happen
-                                self.chat_history.selection = Some(((col, row), (col, row)));
-                            }
-                        }
-                        */
                         event::MouseEventKind::Up(btn) if btn == MouseButton::Left => {
-                            // Only expand when not dragging/making a selection
-                            /*
-                            if let Some((start, end)) = self.chat_history.selection {
-                                if start == end {
-                                    self.chat_history.selection = None;
-                            */
                             let mut messages = self.chat_history.messages.lock().unwrap();
 
                             if let Ok(mut clipboard_ctx) = copypasta::ClipboardContext::new() {
@@ -1416,10 +1465,6 @@ impl App {
                                     }
                                 }
                             }
-                            /*
-                                                           }
-                                                       }
-                            */
                         }
                         _ => {}
                     },

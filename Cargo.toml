@@ -41,6 +41,7 @@ termios = "0.3.3"
 clap-markdown = "0.1.4"
 copypasta = "0.10.1"
 derivative = "2.2.0"
+tokio-stream = {version = "0.1.16", features = ["io-util"]}
 
 [dev-dependencies]
 tempfile = "3.12.0"
