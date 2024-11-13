@@ -104,7 +104,6 @@ fn list_changed_files(repo_path: &Path) -> Result<Vec<PathBuf>> {
 fn process_chat_message(
     repo_path: &Path,
     modified_files: &[ChatModifiedFile],
-    temp_commit: bool,
 ) -> Result<Option<String>> {
     if modified_files.len() == 0 {
         return Ok(None);
@@ -115,26 +114,30 @@ fn process_chat_message(
 
     let mut index = repo.index()?;
 
-    if temp_commit {
-        index.add_all(&["*"], git2::IndexAddOption::DEFAULT, None)?;
-        index.write()?;
-        let tree_id = index.write_tree()?;
-        let tree = repo.find_tree(tree_id)?;
-        let head = repo.head()?;
-        let parent_commit = repo.find_commit(head.target().unwrap())?;
-        let signature = git2::Signature::now(
-            "bismuthdev[bot]",
-            "bismuthdev[bot]@users.noreply.github.com",
-        )?;
-        repo.commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            "Bismuth Temp Commit",
-            &tree,
-            &[&parent_commit],
-        )?;
+    index.add_all(&["*"], git2::IndexAddOption::DEFAULT, None)?;
+    index.write()?;
+    let tree_id = index.write_tree()?;
+    let tree = repo.find_tree(tree_id)?;
+    let head = repo.head()?;
+    let parent_commit = repo.find_commit(head.target().unwrap())?;
+
+    // Don't stack temp commits
+    if parent_commit.message().unwrap_or("") == "Bismuth Temp Commit" {
+        return Ok(None);
     }
+
+    let signature = git2::Signature::now(
+        "bismuthdev[bot]",
+        "bismuthdev[bot]@users.noreply.github.com",
+    )?;
+    repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        "Bismuth Temp Commit",
+        &tree,
+        &[&parent_commit],
+    )?;
 
     for mf in modified_files {
         trace!("Writing file: {}", mf.project_path);
@@ -242,6 +245,14 @@ fn commit(repo_path: &Path, message: Option<&str>) -> Result<()> {
 
 fn revert(repo_path: &Path) -> Result<()> {
     let repo = git2::Repository::open(&repo_path)?;
+
+    let head = repo.head()?;
+    let parent_commit = repo.find_commit(head.target().unwrap())?;
+
+    // Don't revert unless this is a temp commit
+    if parent_commit.message().unwrap_or("") != "Bismuth Temp Commit" {
+        return Ok(());
+    }
 
     let mut index = repo.index()?;
     index.remove_all(&["*"], None)?;
@@ -697,12 +708,15 @@ impl Widget for &mut ChatHistoryWidget {
                                             .map(|l| {
                                                 format!(
                                                     " {}",
-                                                    &l[..(area.width as usize - 3).min(l.len())]
+                                                    l.chars()
+                                                        .take(area.width as usize - 3)
+                                                        .collect::<String>()
                                                 )
                                             })
                                             .collect::<Vec<_>>();
                                         lines.extend(
-                                            (&output_lines[output_lines.len().saturating_sub(5)..])
+                                            (&output_lines
+                                                [output_lines.len().saturating_sub(10)..])
                                                 .iter()
                                                 .map(|l| Line::raw(l.clone())),
                                         );
@@ -1111,9 +1125,9 @@ impl App {
                                 last.finalized = true;
                             }
 
+                            revert(&repo_path).unwrap();
                             if let Some(diff) =
-                                process_chat_message(&repo_path, &output_modified_files, true)
-                                    .unwrap()
+                                process_chat_message(&repo_path, &output_modified_files).unwrap()
                             {
                                 if !diff.is_empty() {
                                     let mut state = state.lock().unwrap();
@@ -1139,8 +1153,9 @@ impl App {
                     }
                 }
                 api::ws::Message::RunCommand(cmd) => {
-                    process_chat_message(&repo_path, &cmd.output_modified_files, false)?;
                     let repo_path = repo_path.to_path_buf();
+                    process_chat_message(&repo_path, &cmd.output_modified_files)?;
+
                     let write_ = write.clone();
                     let scrollback_ = scrollback.clone();
                     tokio::spawn(async move {
