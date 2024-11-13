@@ -114,30 +114,29 @@ fn process_chat_message(
 
     let mut index = repo.index()?;
 
-    index.add_all(&["*"], git2::IndexAddOption::DEFAULT, None)?;
-    index.write()?;
-    let tree_id = index.write_tree()?;
-    let tree = repo.find_tree(tree_id)?;
     let head = repo.head()?;
     let parent_commit = repo.find_commit(head.target().unwrap())?;
 
     // Don't stack temp commits
-    if parent_commit.message().unwrap_or("") == "Bismuth Temp Commit" {
-        return Ok(None);
-    }
+    if parent_commit.message().unwrap_or("") != "Bismuth Temp Commit" {
+        index.add_all(&["*"], git2::IndexAddOption::DEFAULT, None)?;
+        index.write()?;
+        let tree_id = index.write_tree()?;
+        let tree = repo.find_tree(tree_id)?;
 
-    let signature = git2::Signature::now(
-        "bismuthdev[bot]",
-        "bismuthdev[bot]@users.noreply.github.com",
-    )?;
-    repo.commit(
-        Some("HEAD"),
-        &signature,
-        &signature,
-        "Bismuth Temp Commit",
-        &tree,
-        &[&parent_commit],
-    )?;
+        let signature = git2::Signature::now(
+            "bismuthdev[bot]",
+            "bismuthdev[bot]@users.noreply.github.com",
+        )?;
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "Bismuth Temp Commit",
+            &tree,
+            &[&parent_commit],
+        )?;
+    }
 
     for mf in modified_files {
         trace!("Writing file: {}", mf.project_path);
@@ -704,6 +703,7 @@ impl Widget for &mut ChatHistoryWidget {
                                         lines.push(h_border.clone());
                                         let output_lines = command
                                             .output
+                                            .replace("\t", "    ")
                                             .lines()
                                             .map(|l| {
                                                 format!(
@@ -875,7 +875,7 @@ impl Widget for &mut DiffReviewWidget {
             .diff
             .lines()
             .map(|line| {
-                let mut ui_line = Line::raw(line);
+                let mut ui_line = Line::raw(line.replace("\t", "    "));
                 if line.starts_with('+') && !line.starts_with("+++") {
                     ui_line = ui_line.green();
                 } else if line.starts_with('-') && !line.starts_with("---") {
