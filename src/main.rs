@@ -426,8 +426,24 @@ async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Resul
             .json()
             .await?;
 
+        if git_repo.head().is_err() {
+            let mut index = git_repo.index()?;
+            let tree_id = index.write_tree()?;
+            let tree = git_repo.find_tree(tree_id)?;
+            let signature = git2::Signature::now(
+                "bismuthdev[bot]",
+                "bismuthdev[bot]@users.noreply.github.com",
+            )?;
+            git_repo.commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "Initial commit",
+                &tree,
+                &[],
+            )?;
+        }
         set_bismuth_remote(&repo, &project)?;
-        let branch_name = git_repo.head()?.shorthand().unwrap().to_string();
 
         Command::new("git")
             .arg("-C")
@@ -567,7 +583,7 @@ fn check_not_pushed(repo: &Path, project: &api::Project, feature: &api::Feature)
         )?
         .get()
         .target()
-        .ok_or(anyhow!("No branch in origin?"))?;
+        .ok_or(anyhow!("No such branch in origin remote?"))?;
     let bismuth_commit = repo
         .find_branch(
             &format!("bismuth/{}", &branch_name),
@@ -575,7 +591,7 @@ fn check_not_pushed(repo: &Path, project: &api::Project, feature: &api::Feature)
         )?
         .get()
         .target()
-        .ok_or(anyhow!("No branch in bismuth?"))?;
+        .ok_or(anyhow!("No such branch in bismuth remote?"))?;
 
     return Ok(origin_commit != bismuth_commit);
 }
@@ -1623,6 +1639,9 @@ async fn main() -> Result<()> {
         Ok(_) => Ok(()),
         Err(e) => {
             eprintln!("{}", e.to_string().red());
+            if std::env::var("RUST_BACKTRACE").is_ok() {
+                return Err(e);
+            }
             std::process::exit(1);
         }
     }
