@@ -406,11 +406,16 @@ impl CodeBlock {
                     .enumerate()
                     .map(|(line_no, line)| {
                         OwnedLine::from(
-                            vec![if diff_highlight_lines.contains(&line_no) {
-                                ("█", Style::default().fg(ratatui::style::Color::Green))
+                            // Necessary so empty lines don't get double rendered
+                            (if line != "\n" {
+                                vec![if diff_highlight_lines.contains(&line_no) {
+                                    ("█", Style::default().fg(ratatui::style::Color::Green))
+                                } else {
+                                    (" ", Style::default())
+                                }]
                             } else {
-                                (" ", Style::default())
-                            }]
+                                vec![]
+                            })
                             .into_iter()
                             .chain(h.highlight_line(line, &ps).unwrap().into_iter().map(
                                 |(syntect_style, content)| {
@@ -1050,11 +1055,7 @@ impl Widget for &mut ACIVizWidget {
 
         Clear.render(area, buf);
 
-        let block = Block::bordered().title(Line::from(vec![
-            " Bismuth Agent - ".into(),
-            Span::from(format!("Status: {} ", &self.status))
-                .style(Style::default().fg(ratatui::style::Color::Green)),
-        ]));
+        let block = Block::bordered().title(" Bismuth Agent ");
         let block_area = area;
         let area = block.inner(area);
         block.render(block_area, buf);
@@ -1062,8 +1063,9 @@ impl Widget for &mut ACIVizWidget {
         let vertical = ratatui::layout::Layout::vertical([
             ratatui::layout::Constraint::Length(1), // file tabs
             ratatui::layout::Constraint::Min(0),
+            ratatui::layout::Constraint::Length(2), // status bar + top border
         ]);
-        let [tab_area, file_area] = vertical.areas(area);
+        let [tab_area, file_area, status_area] = vertical.areas(area);
 
         Tabs::new(
             self.files
@@ -1133,6 +1135,13 @@ impl Widget for &mut ACIVizWidget {
             paragraph.render(file_area, buf);
             StatefulWidget::render(file_scroll, file_area, buf, &mut scroll_state);
         }
+
+        Paragraph::new(Line::styled(
+            format!(" Agent Status: {} ", &self.status),
+            Style::default().fg(ratatui::style::Color::Green),
+        ))
+        .block(Block::new().borders(Borders::TOP))
+        .render(status_area, buf);
     }
 }
 
@@ -1439,8 +1448,10 @@ impl App {
                                     }
                                 }
                                 api::ws::ACIMessage::Close => {
+                                    // We'll get a switch immediately after this for the new active file, so don't need to clear contents.
+                                    widget.status =
+                                        format!("Closed {}", widget.files[widget.current_idx]);
                                     widget.files.remove(widget.current_idx);
-                                    widget.current_idx = widget.current_idx.saturating_sub(1);
                                 }
                                 api::ws::ACIMessage::Edit {
                                     new_contents,
