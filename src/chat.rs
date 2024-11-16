@@ -1,6 +1,6 @@
 use std::{
     cell::OnceCell,
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
@@ -21,7 +21,8 @@ use ratatui::{
     style::{Style, Stylize},
     text::{Line, Span},
     widgets::{
-        Block, Clear, Padding, Paragraph, Scrollbar, ScrollbarState, StatefulWidget, Widget,
+        Block, Borders, Clear, Padding, Paragraph, Scrollbar, ScrollbarState, StatefulWidget, Tabs,
+        Widget,
     },
 };
 use serde_json::json;
@@ -361,16 +362,30 @@ struct CodeBlock {
 
     #[derivative(PartialEq = "ignore")]
     folded: bool,
+
+    diff_highlight_lines: Option<Vec<usize>>,
 }
 
 impl CodeBlock {
     fn new(filename: Option<&str>, language: Option<&str>, raw_code: &str) -> Self {
         Self {
             filename: filename.map(|f| f.to_string()),
-            language: language.unwrap_or("").to_string(),
+            language: if let Some(language) = language {
+                language.to_string()
+            } else if let Some(filename) = filename {
+                let ps = two_face::syntax::extra_newlines();
+                ps.syntaxes()
+                    .iter()
+                    .find(|s| s.file_extensions.iter().any(|e| filename.ends_with(e)))
+                    .map(|s| s.name.clone())
+                    .unwrap_or("".to_string())
+            } else {
+                "".to_string()
+            },
             raw_code: raw_code.to_string().replace("\t", "    "),
             lines: OnceCell::new(),
             folded: true,
+            diff_highlight_lines: None,
         }
     }
     fn lines(&self) -> &Vec<OwnedLine> {
@@ -386,33 +401,69 @@ impl CodeBlock {
                 syntax,
                 ts.get(two_face::theme::EmbeddedThemeName::Base16OceanDark),
             );
-            LinesWithEndings::from(&self.raw_code)
-                .map(|line| {
-                    OwnedLine::from(
-                        h.highlight_line(line, &ps)
-                            .unwrap()
+            if let Some(diff_highlight_lines) = &self.diff_highlight_lines {
+                LinesWithEndings::from(&self.raw_code)
+                    .enumerate()
+                    .map(|(line_no, line)| {
+                        OwnedLine::from(
+                            vec![if diff_highlight_lines.contains(&line_no) {
+                                ("█", Style::default().fg(ratatui::style::Color::Green))
+                            } else {
+                                (" ", Style::default())
+                            }]
                             .into_iter()
-                            .map(|(syntect_style, content)| {
-                                (
-                                    content,
-                                    Style {
-                                        fg: match syntect_style.foreground {
-                                            // TODO: detect terminal and disable highlighting if 24 bit color is unsupported
-                                            syntect::highlighting::Color { r, g, b, a } => {
-                                                Some(ratatui::style::Color::Rgb(r, g, b))
-                                            }
+                            .chain(h.highlight_line(line, &ps).unwrap().into_iter().map(
+                                |(syntect_style, content)| {
+                                    (
+                                        content,
+                                        Style {
+                                            fg: match syntect_style.foreground {
+                                                // TODO: detect terminal and disable highlighting if 24 bit color is unsupported
+                                                syntect::highlighting::Color { r, g, b, a } => {
+                                                    Some(ratatui::style::Color::Rgb(r, g, b))
+                                                }
+                                            },
+                                            bg: None,
+                                            underline_color: None,
+                                            add_modifier: ratatui::style::Modifier::empty(),
+                                            sub_modifier: ratatui::style::Modifier::empty(),
                                         },
-                                        bg: None,
-                                        underline_color: None,
-                                        add_modifier: ratatui::style::Modifier::empty(),
-                                        sub_modifier: ratatui::style::Modifier::empty(),
-                                    },
-                                )
-                            })
+                                    )
+                                },
+                            ))
                             .collect::<Vec<_>>(),
-                    )
-                })
-                .collect()
+                        )
+                    })
+                    .collect()
+            } else {
+                LinesWithEndings::from(&self.raw_code)
+                    .map(|line| {
+                        OwnedLine::from(
+                            h.highlight_line(line, &ps)
+                                .unwrap()
+                                .into_iter()
+                                .map(|(syntect_style, content)| {
+                                    (
+                                        content,
+                                        Style {
+                                            fg: match syntect_style.foreground {
+                                                // TODO: detect terminal and disable highlighting if 24 bit color is unsupported
+                                                syntect::highlighting::Color { r, g, b, a } => {
+                                                    Some(ratatui::style::Color::Rgb(r, g, b))
+                                                }
+                                            },
+                                            bg: None,
+                                            underline_color: None,
+                                            add_modifier: ratatui::style::Modifier::empty(),
+                                            sub_modifier: ratatui::style::Modifier::empty(),
+                                        },
+                                    )
+                                })
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect()
+            }
         })
     }
 }
@@ -621,7 +672,7 @@ impl Widget for &mut ChatHistoryWidget {
     fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
         let block = Block::new()
             .title(format!(
-                "Chat History{}",
+                " Chat History{} ",
                 match &self.session._name {
                     Some(name) => format!(" ({})", name),
                     None => "".to_string(),
@@ -799,7 +850,7 @@ impl Widget for &mut ChatHistoryWidget {
             // +3 so you can scroll past the bottom a bit to see this is really the end
             let nlines = message_hitboxes.last().unwrap_or(&(0, 0)).1 + 3;
             let old_scroll_max = self.scroll_max;
-            self.scroll_max = nlines.max(area.height as usize) - (area.height as usize);
+            self.scroll_max = nlines.saturating_sub(area.height as usize);
             // Auto scroll to the bottom if we were already at the bottom
             if self.scroll_position == old_scroll_max {
                 self.scroll_position = self.scroll_max;
@@ -886,13 +937,13 @@ impl Widget for &mut DiffReviewWidget {
             .collect::<Vec<_>>();
         let paragraph = Paragraph::new(lines)
             .block(Block::bordered().title(vec![
-                "Review Diff ".into(),
-                Span::styled("(y to commit, n to revert)", ratatui::style::Color::Yellow),
+                " Review Diff ".into(),
+                Span::styled("(y to commit, n to revert) ", ratatui::style::Color::Yellow),
             ]))
             .scroll((self.v_scroll_position as u16, self.h_scroll_position as u16));
 
         let nlines = self.diff.lines().count();
-        self.v_scroll_max = nlines.max(area.height as usize) - (area.height as usize);
+        self.v_scroll_max = nlines.saturating_sub(area.height as usize);
         self.v_scroll_state = self
             .v_scroll_state
             .position(self.v_scroll_position)
@@ -904,8 +955,7 @@ impl Widget for &mut DiffReviewWidget {
             .map(|l| l.len())
             .max()
             .unwrap_or(0)
-            .max(area.width as usize)
-            - (area.width as usize);
+            .saturating_sub(area.width as usize);
         self.h_scroll_state = self
             .h_scroll_state
             .position(self.h_scroll_position)
@@ -950,7 +1000,7 @@ impl Widget for &mut SelectSessionWidget {
         let paragraph = Paragraph::new(lines)
             .block(
                 Block::bordered()
-                    .title("Select Session")
+                    .title(" Select Session ")
                     .padding(Padding::new(1, 0, 0, 0)),
             )
             .scroll((self.v_scroll_position as u16, 0));
@@ -977,6 +1027,116 @@ impl Widget for &mut SelectSessionWidget {
 }
 
 #[derive(Clone, Debug)]
+struct ACIVizWidget {
+    files: Vec<String>,
+    current_idx: usize,
+    contents: CodeBlock,
+    in_scroll: bool,
+    anim_scroll_position: usize,
+    anim_scroll_time: Instant,
+    target_scroll_position: usize,
+    status: String,
+    test_output: Option<String>,
+}
+
+impl Widget for &mut ACIVizWidget {
+    fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
+        // Padding around the outside
+        let mut area = area;
+        area.width = area.width.saturating_sub(8);
+        area.height = area.height.saturating_sub(8);
+        area.x += 4;
+        area.y += 4;
+
+        Clear.render(area, buf);
+
+        let block = Block::bordered().title(Line::from(vec![
+            " Bismuth Agent - ".into(),
+            Span::from(format!("Status: {} ", &self.status))
+                .style(Style::default().fg(ratatui::style::Color::Green)),
+        ]));
+        let block_area = area;
+        let area = block.inner(area);
+        block.render(block_area, buf);
+
+        let vertical = ratatui::layout::Layout::vertical([
+            ratatui::layout::Constraint::Length(1), // file tabs
+            ratatui::layout::Constraint::Min(0),
+        ]);
+        let [tab_area, file_area] = vertical.areas(area);
+
+        Tabs::new(
+            self.files
+                .iter()
+                .map(|file| format!(" {} ", file))
+                .collect::<Vec<_>>(),
+        )
+        .select(self.current_idx)
+        .divider("")
+        .padding("", "")
+        .style(Style::default().bg(ratatui::style::Color::DarkGray))
+        .highlight_style(Style::default().bg(ratatui::style::Color::Blue))
+        .render(tab_area, buf);
+
+        let lines = self.contents.lines();
+        let scroll_max = lines.len().saturating_sub(file_area.height as usize);
+
+        if self.anim_scroll_time.elapsed() > Duration::from_millis(1000) {
+            if self.in_scroll {
+                self.anim_scroll_position += file_area.height as usize - 5;
+            }
+            self.anim_scroll_time = Instant::now();
+        }
+        self.anim_scroll_position = self.anim_scroll_position.min(scroll_max);
+
+        let paragraph = Paragraph::new(lines.iter().map(OwnedLine::as_line).collect::<Vec<_>>())
+            .scroll((self.anim_scroll_position as u16, 0))
+            .wrap(ratatui::widgets::Wrap { trim: false });
+
+        let mut scroll_state = ratatui::widgets::ScrollbarState::default()
+            .position(self.anim_scroll_position)
+            .content_length(scroll_max);
+
+        let file_scroll = Scrollbar::new(ratatui::widgets::ScrollbarOrientation::VerticalRight)
+            .style(Style::default().fg(ratatui::style::Color::DarkGray));
+
+        if let Some(test_output) = &self.test_output {
+            let vertical = ratatui::layout::Layout::vertical([
+                ratatui::layout::Constraint::Percentage(50),
+                ratatui::layout::Constraint::Percentage(50),
+            ]);
+            let [file_area, test_area] = vertical.areas(file_area);
+
+            let test_output = test_output
+                .lines()
+                .map(|line| Line::raw(line))
+                .collect::<Vec<_>>();
+            let test_len = test_output.len();
+            let test_paragraph = Paragraph::new(test_output)
+                .block(Block::new().borders(Borders::TOP).title("─ Test Output "))
+                .scroll((test_len.saturating_sub(test_area.height as usize) as u16, 0))
+                .wrap(ratatui::widgets::Wrap { trim: false });
+
+            paragraph.render(file_area, buf);
+            StatefulWidget::render(file_scroll, file_area, buf, &mut scroll_state);
+
+            let mut test_scroll_state = ratatui::widgets::ScrollbarState::default()
+                .position(test_len.saturating_sub(test_area.height as usize))
+                .content_length(test_len.saturating_sub(test_area.height as usize));
+
+            let test_scroll = Scrollbar::new(ratatui::widgets::ScrollbarOrientation::VerticalRight)
+                .style(Style::default().fg(ratatui::style::Color::DarkGray));
+
+            test_paragraph.render(test_area, buf);
+            StatefulWidget::render(test_scroll, test_area, buf, &mut test_scroll_state);
+        } else {
+            paragraph.render(file_area, buf);
+            StatefulWidget::render(file_scroll, file_area, buf, &mut scroll_state);
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 enum AppState {
     Chat,
     SelectSession(SelectSessionWidget),
@@ -984,6 +1144,7 @@ enum AppState {
     ReviewDiff(DiffReviewWidget),
     // Sort of a hacky way to feed state from the event input loop back up
     ChangeSession(api::ChatSession),
+    ACI(ACIVizWidget),
     Exit,
 }
 
@@ -1050,7 +1211,7 @@ impl App {
 
     fn clear_input(&mut self) {
         self.input = tui_textarea::TextArea::default();
-        self.input.set_block(Block::bordered().title("Message"));
+        self.input.set_block(Block::bordered().title(" Message "));
         self.input
             .set_placeholder_text(" Use Alt/Option + Enter to add a newline");
         self.input.set_cursor_line_style(Style::default());
@@ -1213,6 +1374,107 @@ impl App {
                             ))
                             .await;
                     });
+                }
+                api::ws::Message::ACI(aci) => {
+                    if let api::ws::ACIMessage::Start {
+                        files,
+                        active_file,
+                        new_contents,
+                        scroll_position,
+                    } = aci
+                    {
+                        let current_idx = files.iter().position(|f| *f == active_file).unwrap();
+                        let mut state = state.lock().unwrap();
+                        *state = AppState::ACI(ACIVizWidget {
+                            files,
+                            current_idx,
+                            contents: CodeBlock::new(Some(&active_file), None, &new_contents),
+                            in_scroll: true,
+                            anim_scroll_position: scroll_position,
+                            anim_scroll_time: Instant::now(),
+                            target_scroll_position: scroll_position,
+                            status: format!("Looking through {}", active_file),
+                            test_output: None,
+                        });
+                    } else {
+                        let mut state = state.lock().unwrap();
+                        if let AppState::ACI(ref mut widget) = &mut *state {
+                            widget.contents.diff_highlight_lines = None;
+                            widget.in_scroll = false;
+                            widget.test_output = None; // clear test output after next action
+                            match aci {
+                                api::ws::ACIMessage::Start { .. } => {
+                                    return Err(anyhow!(
+                                        "Received ACI start message but already in ACI state"
+                                    ));
+                                }
+                                api::ws::ACIMessage::Scroll { scroll_position } => {
+                                    widget.in_scroll = true;
+                                    widget.target_scroll_position = scroll_position;
+                                    widget.anim_scroll_time = Instant::now();
+                                    widget.status = format!(
+                                        "Looking through {}",
+                                        widget.files[widget.current_idx]
+                                    );
+                                }
+                                api::ws::ACIMessage::Switch {
+                                    active_file,
+                                    new_contents,
+                                    scroll_position,
+                                } => {
+                                    widget.contents =
+                                        CodeBlock::new(Some(&active_file), None, &new_contents);
+                                    widget.anim_scroll_position = scroll_position;
+                                    widget.target_scroll_position = scroll_position;
+                                    widget.anim_scroll_time = Instant::now();
+                                    widget.in_scroll = true;
+                                    widget.status = format!("Looking through {}", active_file);
+                                    if let Some(current_idx) =
+                                        widget.files.iter().position(|f| *f == active_file)
+                                    {
+                                        widget.current_idx = current_idx;
+                                    } else {
+                                        widget.files.push(active_file);
+                                        widget.current_idx = widget.files.len() - 1;
+                                    }
+                                }
+                                api::ws::ACIMessage::Close => {
+                                    widget.files.remove(widget.current_idx);
+                                    widget.current_idx = widget.current_idx.saturating_sub(1);
+                                }
+                                api::ws::ACIMessage::Edit {
+                                    new_contents,
+                                    scroll_position,
+                                    changed_range,
+                                } => {
+                                    widget.contents = CodeBlock::new(
+                                        Some(&widget.files[widget.current_idx]),
+                                        None,
+                                        &new_contents,
+                                    );
+                                    widget.contents.diff_highlight_lines =
+                                        Some((changed_range.0..changed_range.1).collect());
+                                    widget.anim_scroll_position = scroll_position.saturating_sub(5);
+                                    widget.target_scroll_position =
+                                        scroll_position.saturating_sub(5);
+                                    widget.status = format!(
+                                        "Made changes to {}",
+                                        widget.files[widget.current_idx]
+                                    );
+                                }
+                                api::ws::ACIMessage::Test { test_output } => {
+                                    widget.test_output = Some(test_output.replace("\t", "    "));
+                                    widget.status = format!(
+                                        "Ran tests for {}",
+                                        widget.files[widget.current_idx]
+                                    );
+                                }
+                                api::ws::ACIMessage::End => {
+                                    *state = AppState::Chat;
+                                }
+                            }
+                        }
+                    }
                 }
                 api::ws::Message::Error(err) => {
                     return Err(anyhow!(err));
@@ -1505,11 +1767,6 @@ impl App {
                         _ => {}
                     },
                     Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
-                        /*
-                        KeyCode::Char('c')
-                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-                        {
-                        } */
                         KeyCode::Char('d')
                             if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
                         {
@@ -1538,6 +1795,8 @@ impl App {
                                     .map_or(true, |msg| msg.finalized);
                                 if last_generation_done {
                                     self.handle_chat_input(&write).await?;
+                                    self.chat_history.scroll_position =
+                                        self.chat_history.scroll_max;
                                 }
                             }
                         }
@@ -1546,6 +1805,16 @@ impl App {
                         }
                     },
                     _ => (),
+                },
+                AppState::ACI(_) => match event::read()? {
+                    Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
+                        KeyCode::Esc => {
+                            let mut state = self.state.lock().unwrap();
+                            *state = AppState::Chat;
+                        }
+                        _ => {}
+                    },
+                    _ => {}
                 },
             }
         }
@@ -1853,14 +2122,17 @@ fn ui(
         }
         AppState::Popup(title, text) => {
             let paragraph = Paragraph::new(text.clone()).block(Block::bordered().title(vec![
-                format!("{} ", title).into(),
-                Span::styled("(press any key to close)", ratatui::style::Color::Yellow),
+                format!(" {} ", title).into(),
+                Span::styled("(press any key to close) ", ratatui::style::Color::Yellow),
             ]));
             let area = centered_paragraph(&paragraph, frame.area());
             frame.render_widget(Clear, area);
             frame.render_widget(paragraph, area);
         }
         AppState::SelectSession(widget) => {
+            frame.render_widget(widget, frame.area());
+        }
+        AppState::ACI(widget) => {
             frame.render_widget(widget, frame.area());
         }
         _ => {}

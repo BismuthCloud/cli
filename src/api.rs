@@ -163,6 +163,8 @@ pub struct LLMConfigurationRequest {
 }
 
 pub mod ws {
+    use std::collections::HashMap;
+
     use serde::{ser::SerializeStruct, Deserialize, Serialize};
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -249,6 +251,35 @@ pub mod ws {
         pub output: String,
     }
 
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "action", rename_all = "SCREAMING_SNAKE_CASE")]
+    pub enum ACIMessage {
+        Start {
+            files: Vec<String>,
+            active_file: String,
+            new_contents: String,
+            scroll_position: usize,
+        },
+        Scroll {
+            scroll_position: usize,
+        },
+        Switch {
+            active_file: String,
+            new_contents: String,
+            scroll_position: usize,
+        },
+        Close,
+        Edit {
+            new_contents: String,
+            scroll_position: usize,
+            changed_range: (usize, usize),
+        },
+        Test {
+            test_output: String,
+        },
+        End,
+    }
+
     #[derive(Debug)]
     pub enum Message {
         Auth(AuthMessage),
@@ -257,6 +288,7 @@ pub mod ws {
         ResponseState(ResponseStateMessage),
         RunCommand(RunCommandMessage),
         RunCommandResponse(RunCommandResponse),
+        ACI(ACIMessage),
         Error(String),
     }
 
@@ -334,6 +366,16 @@ pub mod ws {
                     )
                     .map_err(serde::de::Error::custom)?;
                     Ok(Message::RunCommand(command))
+                }
+                Some("ACI") => {
+                    let aci = serde_json::from_value(
+                        value
+                            .get("aci")
+                            .ok_or(serde::de::Error::custom("missing inner aci"))?
+                            .clone(),
+                    )
+                    .map_err(serde::de::Error::custom)?;
+                    Ok(Message::ACI(aci))
                 }
                 None if value.get("error").is_some() => {
                     // Handle generic {"error": "asdf"} messages that come if the backend raises an error
