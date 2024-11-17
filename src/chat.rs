@@ -1252,14 +1252,6 @@ impl App {
                 return Ok(());
             }
             let message_txt = &message.into_text().unwrap();
-            let mut file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("debug.log")
-                .unwrap();
-            writeln!(file, "---------------").unwrap();
-            writeln!(file, "{}", message_txt).unwrap();
-            writeln!(file, "---------------").unwrap();
 
             let data: api::ws::Message = match serde_json::from_str(&message_txt) {
                 Ok(data) => data,
