@@ -1044,6 +1044,7 @@ struct ACIVizWidget {
     target_scroll_position: usize,
     status: String,
     test_output: Option<String>,
+    run_cmd_output: Option<String>,
 }
 
 impl Widget for &mut ACIVizWidget {
@@ -1133,6 +1134,31 @@ impl Widget for &mut ACIVizWidget {
 
             test_paragraph.render(test_area, buf);
             StatefulWidget::render(test_scroll, test_area, buf, &mut test_scroll_state);
+        } else if let Some(run_cmd_output) = &self.run_cmd_output {
+            let vertical = ratatui::layout::Layout::vertical([
+                ratatui::layout::Constraint::Percentage(50),
+                ratatui::layout::Constraint::Percentage(50),
+            ]);
+            let [file_area, test_area] = vertical.areas(file_area);
+
+            let test_output = run_cmd_output
+                .lines()
+                .map(|line| Line::raw(line))
+                .collect::<Vec<_>>();
+            let test_len = test_output.len();
+            let test_paragraph = Paragraph::new(test_output)
+                .block(
+                    Block::new()
+                        .borders(Borders::TOP)
+                        .title("─ Command Output "),
+                )
+                .scroll((test_len.saturating_sub(test_area.height as usize) as u16, 0))
+                .wrap(ratatui::widgets::Wrap { trim: false });
+
+            paragraph.render(file_area, buf);
+            StatefulWidget::render(file_scroll, file_area, buf, &mut scroll_state);
+
+            test_paragraph.render(test_area, buf);
         } else {
             paragraph.render(file_area, buf);
             StatefulWidget::render(file_scroll, file_area, buf, &mut scroll_state);
@@ -1338,13 +1364,16 @@ impl App {
                     process_chat_message(&repo_path, &cmd.output_modified_files)?;
 
                     let write_ = write.clone();
-                    let scrollback_ = scrollback.clone();
+                    let state_ = state.clone();
                     tokio::spawn(async move {
-                        let mut cmd_block = RunCommandBlock::new(&cmd.command);
+                        let mut output = String::new();
                         {
-                            let mut scrollback = scrollback_.lock().unwrap();
-                            let last = scrollback.last_mut().unwrap();
-                            last.blocks.push(MessageBlock::Command(cmd_block.clone()));
+                            let mut state = state_.lock().unwrap();
+                            if let AppState::ACI(ref mut widget) = &mut *state {
+                                widget.status = format!("Running command '{}'", cmd.command);
+                                widget.run_cmd_output = Some(output.clone());
+                                widget.in_scroll = false;
+                            }
                         }
 
                         let mut proc = tokio::process::Command::new("sh")
@@ -1365,29 +1394,28 @@ impl App {
                         );
                         let mut merged_stream = tokio_stream::StreamExt::merge(stdout, stderr);
                         while let Some(line) = merged_stream.next().await {
-                            cmd_block.output += &line.unwrap();
-                            cmd_block.output += "\n";
+                            output += &line.unwrap();
+                            output += "\n";
                             {
-                                let mut scrollback = scrollback_.lock().unwrap();
-                                let last = scrollback.last_mut().unwrap();
-                                *last.blocks.last_mut().unwrap() =
-                                    MessageBlock::Command(cmd_block.clone());
+                                let mut state = state_.lock().unwrap();
+                                if let AppState::ACI(ref mut widget) = &mut *state {
+                                    widget.run_cmd_output = Some(output.clone());
+                                }
                             }
                         }
                         let exit_status = proc.wait().await.unwrap();
-                        cmd_block.success = Some(exit_status.success());
                         {
-                            let mut scrollback = scrollback_.lock().unwrap();
-                            let last = scrollback.last_mut().unwrap();
-                            *last.blocks.last_mut().unwrap() =
-                                MessageBlock::Command(cmd_block.clone());
+                            let mut state = state_.lock().unwrap();
+                            if let AppState::ACI(ref mut widget) = &mut *state {
+                                widget.run_cmd_output = Some(output.clone());
+                            }
                         }
                         let _ = write_
                             .send(Message::Text(
                                 serde_json::to_string(&api::ws::Message::RunCommandResponse(
                                     RunCommandResponse {
                                         exit_code: exit_status.code().unwrap(),
-                                        output: cmd_block.output.clone(),
+                                        output,
                                     },
                                 ))
                                 .unwrap(),
@@ -1415,6 +1443,7 @@ impl App {
                             target_scroll_position: scroll_position,
                             status: format!("Looking through {}", active_file),
                             test_output: None,
+                            run_cmd_output: None,
                         });
                     } else {
                         let mut state = state.lock().unwrap();
@@ -1422,6 +1451,7 @@ impl App {
                             widget.contents.diff_highlight_lines = None;
                             widget.in_scroll = false;
                             widget.test_output = None; // clear test output after next action
+                            widget.run_cmd_output = None; // ditto
                             match aci {
                                 api::ws::ACIMessage::Start { .. } => {
                                     return Err(anyhow!(
@@ -1852,16 +1882,8 @@ impl App {
                     },
                     _ => (),
                 },
-                AppState::ACI(_) => match event::read()? {
-                    Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
-                        KeyCode::Esc => {
-                            let mut state = self.state.lock().unwrap();
-                            *state = AppState::Chat;
-                        }
-                        _ => {}
-                    },
-                    _ => {}
-                },
+                // Command running requires the ACI widget to work, so dont allow ESC to hide or similar
+                AppState::ACI(_) => {}
             }
         }
     }
