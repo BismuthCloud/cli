@@ -263,6 +263,12 @@ pub mod ws {
         Scroll {
             scroll_position: usize,
         },
+        Create {
+            active_file: String,
+            new_contents: String,
+            files: Vec<String>,
+            scroll_position: usize,
+        },
         Switch {
             active_file: String,
             new_contents: String,

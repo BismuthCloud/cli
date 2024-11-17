@@ -1,3 +1,5 @@
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::{
     cell::OnceCell,
     collections::{HashMap, HashSet, VecDeque},
@@ -1249,8 +1251,25 @@ impl App {
             if let Message::Close(_) = message {
                 return Ok(());
             }
-            let data: api::ws::Message =
-                serde_json::from_str(&message.into_text().unwrap()).unwrap();
+            let message_txt = &message.into_text().unwrap();
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("debug.log")
+                .unwrap();
+            writeln!(file, "---------------").unwrap();
+            writeln!(file, "{}", message_txt).unwrap();
+            writeln!(file, "---------------").unwrap();
+
+            let data: api::ws::Message = match serde_json::from_str(&message_txt) {
+                Ok(data) => data,
+                Err(e) => {
+                    eprintln!("JSON Parse error: {}", e);
+                    eprintln!("Failed message: {}", &message_txt);
+                    panic!("JSON parse failed {e}");
+                }
+            };
+
             // Daneel snapshot resumption
             {
                 let mut scrollback = scrollback.lock().unwrap();
@@ -1452,6 +1471,29 @@ impl App {
                                     widget.status =
                                         format!("Closed {}", widget.files[widget.current_idx]);
                                     widget.files.remove(widget.current_idx);
+                                }
+                                api::ws::ACIMessage::Create {
+                                    active_file,
+                                    new_contents,
+                                    files,
+                                    scroll_position,
+                                } => {
+                                    widget.files = files;
+                                    widget.contents =
+                                        CodeBlock::new(Some(&active_file), None, &new_contents);
+                                    widget.anim_scroll_position = scroll_position;
+                                    widget.target_scroll_position = scroll_position;
+                                    widget.anim_scroll_time = Instant::now();
+                                    widget.in_scroll = true;
+                                    widget.status = format!("Looking through {}", active_file);
+                                    if let Some(current_idx) =
+                                        widget.files.iter().position(|f| *f == active_file)
+                                    {
+                                        widget.current_idx = current_idx;
+                                    } else {
+                                        widget.files.push(active_file);
+                                        widget.current_idx = widget.files.len() - 1;
+                                    }
                                 }
                                 api::ws::ACIMessage::Edit {
                                     new_contents,
