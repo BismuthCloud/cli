@@ -1531,6 +1531,7 @@ impl App {
 
     async fn run(&mut self) -> Result<Option<api::ChatSession>> {
         let mut terminal = terminal::init()?;
+        terminal.clear()?; // needed to clear session selection screen
 
         let (mut write_sink, mut read) = self.ws_stream.take().unwrap().split();
         let (dead_tx, mut dead_rx) = tokio::sync::oneshot::channel();
