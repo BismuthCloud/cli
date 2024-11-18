@@ -1797,7 +1797,6 @@ impl App {
                         }
                     },
                     Event::Paste(paste) => {
-                        dbg!(&paste);
                         self.input.insert_str(paste);
                     }
                     _ => (),
