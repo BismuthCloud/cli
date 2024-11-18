@@ -1514,8 +1514,6 @@ impl App {
         });
 
         let mut last_draw = Instant::now();
-        let mut last_input = Instant::now();
-        let mut input_delay = VecDeque::new();
         loop {
             let state = { self.state.lock().unwrap().clone() };
             if let AppState::Exit = state {
@@ -1543,12 +1541,6 @@ impl App {
             {
                 continue;
             }
-            // TODO: bracketed paste mode
-            if input_delay.len() == 3 {
-                input_delay.pop_front();
-            }
-            input_delay.push_back(last_input.elapsed());
-            last_input = Instant::now();
             match state {
                 AppState::Exit => {
                     return Ok(None);
@@ -1781,10 +1773,8 @@ impl App {
                         }
                         KeyCode::Enter => {
                             // ALT+enter for manual newlines
-                            // or if this is a paste (in which case input delay is very short)
                             if key.modifiers.contains(event::KeyModifiers::ALT)
                                 || key.modifiers.contains(event::KeyModifiers::SHIFT)
-                                || input_delay.iter().all(|d| d < &Duration::from_millis(1))
                             {
                                 self.input.input(key);
                             } else {
@@ -1806,6 +1796,10 @@ impl App {
                             self.input.input(key);
                         }
                     },
+                    Event::Paste(paste) => {
+                        dbg!(&paste);
+                        self.input.insert_str(paste);
+                    }
                     _ => (),
                 },
                 // Command running requires the ACI widget to work, so dont allow ESC to hide or similar
@@ -2157,8 +2151,9 @@ mod terminal {
         backend::CrosstermBackend,
         crossterm::{
             event::{
-                DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags,
-                PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+                DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
+                EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+                PushKeyboardEnhancementFlags,
             },
             execute,
             terminal::{
@@ -2177,6 +2172,7 @@ mod terminal {
             io::stdout(),
             EnterAlternateScreen,
             EnableMouseCapture,
+            EnableBracketedPaste,
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
         )?;
         let backend = CrosstermBackend::new(io::stdout());
@@ -2196,6 +2192,7 @@ mod terminal {
         if let Err(err) = execute!(
             io::stdout(),
             PopKeyboardEnhancementFlags,
+            DisableBracketedPaste,
             DisableMouseCapture,
             LeaveAlternateScreen,
         ) {
