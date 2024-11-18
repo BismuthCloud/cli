@@ -23,6 +23,7 @@ mod cli;
 use cli::{Cli, IdOrName};
 mod chat;
 use chat::start_chat;
+mod bismuth_toml;
 
 static GLOBAL_OPTS: OnceCell<cli::GlobalOpts> = OnceCell::new();
 
@@ -1567,6 +1568,10 @@ async fn _main() -> Result<()> {
                                 .await?
                         }
                     };
+
+                    if let Err(e) = bismuth_toml::parse_config(&repo_path) {
+                        return Err(anyhow!("Invalid bismuth.toml: {}", e));
+                    }
 
                     start_chat(
                         &current_user,

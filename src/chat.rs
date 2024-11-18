@@ -1,8 +1,6 @@
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::{
     cell::OnceCell,
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashSet, VecDeque},
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
@@ -37,6 +35,7 @@ use tokio_tungstenite::{
 };
 use url::Url;
 
+use crate::bismuth_toml;
 use crate::{
     api::{
         self,
@@ -1361,6 +1360,13 @@ impl App {
                 }
                 api::ws::Message::RunCommand(cmd) => {
                     let repo_path = repo_path.to_path_buf();
+                    let timeout = Duration::from_secs(
+                        bismuth_toml::parse_config(&repo_path)
+                            .unwrap_or_default()
+                            .chat
+                            .command_timeout,
+                    );
+
                     process_chat_message(&repo_path, &cmd.output_modified_files)?;
 
                     let write_ = write.clone();
@@ -1375,35 +1381,45 @@ impl App {
                                 widget.in_scroll = false;
                             }
                         }
+                        let proc_future = async {
+                            let mut proc = tokio::process::Command::new("sh")
+                                .arg("-c")
+                                .arg(&cmd.command)
+                                .stdin(std::process::Stdio::null())
+                                .stdout(std::process::Stdio::piped())
+                                .stderr(std::process::Stdio::piped())
+                                .current_dir(&repo_path)
+                                .spawn()
+                                .unwrap();
 
-                        let mut proc = tokio::process::Command::new("sh")
-                            .arg("-c")
-                            .arg(&cmd.command)
-                            .stdin(std::process::Stdio::null())
-                            .stdout(std::process::Stdio::piped())
-                            .stderr(std::process::Stdio::piped())
-                            .current_dir(&repo_path)
-                            .spawn()
-                            .unwrap();
-
-                        let stdout = LinesStream::new(
-                            tokio::io::BufReader::new(proc.stdout.take().unwrap()).lines(),
-                        );
-                        let stderr = LinesStream::new(
-                            tokio::io::BufReader::new(proc.stderr.take().unwrap()).lines(),
-                        );
-                        let mut merged_stream = tokio_stream::StreamExt::merge(stdout, stderr);
-                        while let Some(line) = merged_stream.next().await {
-                            output += &line.unwrap();
-                            output += "\n";
-                            {
-                                let mut state = state_.lock().unwrap();
-                                if let AppState::ACI(ref mut widget) = &mut *state {
-                                    widget.run_cmd_output = Some(output.clone());
+                            let stdout = LinesStream::new(
+                                tokio::io::BufReader::new(proc.stdout.take().unwrap()).lines(),
+                            );
+                            let stderr = LinesStream::new(
+                                tokio::io::BufReader::new(proc.stderr.take().unwrap()).lines(),
+                            );
+                            let mut merged_stream = tokio_stream::StreamExt::merge(stdout, stderr);
+                            while let Some(line) = merged_stream.next().await {
+                                output += &line.unwrap();
+                                output += "\n";
+                                {
+                                    let mut state = state_.lock().unwrap();
+                                    if let AppState::ACI(ref mut widget) = &mut *state {
+                                        widget.run_cmd_output = Some(output.clone());
+                                    }
                                 }
                             }
-                        }
-                        let exit_status = proc.wait().await.unwrap();
+
+                            proc.wait().await.unwrap()
+                        };
+
+                        let exit_code = match tokio::time::timeout(timeout, proc_future).await {
+                            Ok(exit_status) => exit_status.code().unwrap(),
+                            Err(_) => {
+                                output += "\n(Command timed out)";
+                                1
+                            }
+                        };
                         {
                             let mut state = state_.lock().unwrap();
                             if let AppState::ACI(ref mut widget) = &mut *state {
@@ -1413,10 +1429,7 @@ impl App {
                         let _ = write_
                             .send(Message::Text(
                                 serde_json::to_string(&api::ws::Message::RunCommandResponse(
-                                    RunCommandResponse {
-                                        exit_code: exit_status.code().unwrap(),
-                                        output,
-                                    },
+                                    RunCommandResponse { exit_code, output },
                                 ))
                                 .unwrap(),
                             ))
@@ -2270,22 +2283,23 @@ mod terminal {
 
     /// Restores the terminal to its original state.
     pub fn restore() {
-        if let Err(err) = disable_raw_mode() {
-            eprintln!("error disabling raw mode: {err}");
-        }
         if let Err(err) = execute!(
             io::stdout(),
-            LeaveAlternateScreen,
-            DisableMouseCapture,
             PopKeyboardEnhancementFlags,
+            DisableMouseCapture,
+            LeaveAlternateScreen,
         ) {
             eprintln!("error leaving alternate screen: {err}");
+        }
+        if let Err(err) = disable_raw_mode() {
+            eprintln!("error disabling raw mode: {err}");
         }
         // Reset cursor shape
         let _ = Command::new("tput").arg("cnorm").status();
     }
 }
 
+#[cfg(test)]
 mod test {
     use super::*;
     use std::collections::HashSet;
