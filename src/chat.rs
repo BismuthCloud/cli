@@ -54,7 +54,7 @@ fn websocket_url(api_url: &Url) -> &'static str {
 
 /// List files that have changed in the working directory compared to the upstream branch.
 fn list_changed_files(repo_path: &Path) -> Result<Vec<PathBuf>> {
-    let repo = git2::Repository::open(&repo_path)?;
+    let repo = git2::Repository::open(repo_path)?;
     let branch = repo.head()?.shorthand().unwrap().to_string();
     let upstream_commit = repo
         .find_branch(&format!("bismuth/{}", branch), git2::BranchType::Remote)?
@@ -107,7 +107,7 @@ fn process_chat_message(
     repo_path: &Path,
     modified_files: &[ChatModifiedFile],
 ) -> Result<Option<String>> {
-    if modified_files.len() == 0 {
+    if modified_files.is_empty() {
         return Ok(None);
     }
 
@@ -121,7 +121,7 @@ fn process_chat_message(
 
     // Don't stack temp commits
     if parent_commit.message().unwrap_or("") != "Bismuth Temp Commit" {
-        index.add_all(&["*"], git2::IndexAddOption::DEFAULT, None)?;
+        index.add_all(["*"], git2::IndexAddOption::DEFAULT, None)?;
         index.write()?;
         let tree_id = index.write_tree()?;
         let tree = repo.find_tree(tree_id)?;
@@ -152,7 +152,7 @@ fn process_chat_message(
         std::fs::write(full_path, &mf.content)?;
     }
 
-    index.add_all(&["*"], git2::IndexAddOption::DEFAULT, None)?;
+    index.add_all(["*"], git2::IndexAddOption::DEFAULT, None)?;
     index.write()?;
 
     let diff = Command::new("git")
@@ -178,7 +178,7 @@ fn process_chat_message(
 fn commit(repo_path: &Path, message: Option<&str>) -> Result<()> {
     Command::new("git")
         .arg("-C")
-        .arg(&repo_path)
+        .arg(repo_path)
         .arg("reset")
         .arg("HEAD~1")
         .output()
@@ -192,9 +192,9 @@ fn commit(repo_path: &Path, message: Option<&str>) -> Result<()> {
         })
         .and_then(|s| String::from_utf8(s).map_err(|e| anyhow!(e)))?;
 
-    let repo = git2::Repository::open(&repo_path)?;
+    let repo = git2::Repository::open(repo_path)?;
     let mut index = repo.index()?;
-    index.add_all(&["*"], git2::IndexAddOption::DEFAULT, None)?;
+    index.add_all(["*"], git2::IndexAddOption::DEFAULT, None)?;
     index.write()?;
     let tree_id = index.write_tree()?;
     let tree = repo.find_tree(tree_id)?;
@@ -245,7 +245,7 @@ fn commit(repo_path: &Path, message: Option<&str>) -> Result<()> {
 }
 
 fn revert(repo_path: &Path) -> Result<()> {
-    let repo = git2::Repository::open(&repo_path)?;
+    let repo = git2::Repository::open(repo_path)?;
 
     let head = repo.head()?;
     let parent_commit = repo.find_commit(head.target().unwrap())?;
@@ -256,12 +256,12 @@ fn revert(repo_path: &Path) -> Result<()> {
     }
 
     let mut index = repo.index()?;
-    index.remove_all(&["*"], None)?;
+    index.remove_all(["*"], None)?;
     index.write()?;
 
     Command::new("git")
         .arg("-C")
-        .arg(&repo_path)
+        .arg(repo_path)
         .arg("reset")
         .arg("--hard")
         .output()
@@ -276,7 +276,7 @@ fn revert(repo_path: &Path) -> Result<()> {
 
     Command::new("git")
         .arg("-C")
-        .arg(&repo_path)
+        .arg(repo_path)
         .arg("clean")
         .arg("-f")
         .arg("-d")
@@ -292,7 +292,7 @@ fn revert(repo_path: &Path) -> Result<()> {
 
     Command::new("git")
         .arg("-C")
-        .arg(&repo_path)
+        .arg(repo_path)
         .arg("reset")
         .arg("HEAD~1")
         .output()
@@ -325,7 +325,7 @@ impl From<Vec<(&str, Style)>> for OwnedLine {
         Self {
             spans: spans
                 .into_iter()
-                .map(|(s, style)| (s.replace("\t", "    ").into(), style))
+                .map(|(s, style)| (s.replace("\t", "    "), style))
                 .collect(),
         }
     }
@@ -334,7 +334,7 @@ impl From<Vec<(&str, Style)>> for OwnedLine {
 impl From<&str> for OwnedLine {
     fn from(s: &str) -> Self {
         Self {
-            spans: vec![(s.replace("\t", "    ").into(), Style::default())],
+            spans: vec![(s.replace("\t", "    "), Style::default())],
         }
     }
 }
@@ -423,11 +423,10 @@ impl CodeBlock {
                                     (
                                         content,
                                         Style {
-                                            fg: match syntect_style.foreground {
-                                                // TODO: detect terminal and disable highlighting if 24 bit color is unsupported
-                                                syntect::highlighting::Color { r, g, b, a } => {
-                                                    Some(ratatui::style::Color::Rgb(r, g, b))
-                                                }
+                                            fg: {
+                                                let syntect::highlighting::Color { r, g, b, a: _ } =
+                                                    syntect_style.foreground;
+                                                Some(ratatui::style::Color::Rgb(r, g, b))
                                             },
                                             bg: None,
                                             underline_color: None,
@@ -452,11 +451,10 @@ impl CodeBlock {
                                     (
                                         content,
                                         Style {
-                                            fg: match syntect_style.foreground {
-                                                // TODO: detect terminal and disable highlighting if 24 bit color is unsupported
-                                                syntect::highlighting::Color { r, g, b, a } => {
-                                                    Some(ratatui::style::Color::Rgb(r, g, b))
-                                                }
+                                            fg: {
+                                                let syntect::highlighting::Color { r, g, b, a: _ } =
+                                                    syntect_style.foreground;
+                                                Some(ratatui::style::Color::Rgb(r, g, b))
                                             },
                                             bg: None,
                                             underline_color: None,
@@ -474,35 +472,16 @@ impl CodeBlock {
     }
 }
 
-#[derive(Clone, Debug, Derivative)]
-#[derivative(PartialEq)]
-struct RunCommandBlock {
-    command: String,
-    output: String,
-    success: Option<bool>,
-}
-
-impl RunCommandBlock {
-    fn new(command: &str) -> Self {
-        Self {
-            command: command.to_string(),
-            output: "".to_string(),
-            success: None,
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 enum MessageBlock {
     Text(Vec<OwnedLine>),
     Thinking(String),
     Code(CodeBlock),
-    Command(RunCommandBlock),
 }
 
 impl MessageBlock {
     fn new_text(text: &str) -> Self {
-        Self::Text(text.split('\n').map(|line| OwnedLine::from(line)).collect())
+        Self::Text(text.split('\n').map(OwnedLine::from).collect())
     }
 }
 
@@ -559,7 +538,7 @@ impl ChatMessage {
                 ratatui::style::Style::default().fg(ratatui::style::Color::Cyan),
             ),
         });
-        spans.push((": ".into(), ratatui::style::Style::default()));
+        spans.push((": ", ratatui::style::Style::default()));
         OwnedLine::from(spans)
     }
 
@@ -567,10 +546,10 @@ impl ChatMessage {
         let root = markdown::to_mdast(text, &markdown::ParseOptions::default()).unwrap();
         let mut blocks = match root.children() {
             Some(nodes) => nodes
-                .into_iter()
+                .iter()
                 .filter_map(|block| match block {
                     markdown::mdast::Node::Code(code_block) => {
-                        if code_block.value.len() > 0 {
+                        if !code_block.value.is_empty() {
                             let fn_line = code_block.value.lines().next().unwrap();
                             let mut filename = None;
                             let mut code = code_block.value.clone();
@@ -728,59 +707,6 @@ impl Widget for &mut ChatHistoryWidget {
                                         }),
                                     )]
                                 }
-                                MessageBlock::Command(command) => {
-                                    let (indicator, color) = match command.success {
-                                        None => (
-                                            vec!['|', '\\', '-', '/'][SystemTime::now()
-                                                .duration_since(UNIX_EPOCH)
-                                                .unwrap()
-                                                .subsec_millis()
-                                                as usize
-                                                / 251],
-                                            ratatui::style::Color::LightGreen,
-                                        ),
-                                        Some(true) => ('✓', ratatui::style::Color::Green),
-                                        Some(false) => ('✗', ratatui::style::Color::Red),
-                                    };
-                                    let h_border = Line::styled(
-                                        (0..(area.width as usize - 2))
-                                            .map(|_| "─")
-                                            .collect::<String>(),
-                                        ratatui::style::Style::default()
-                                            .fg(ratatui::style::Color::DarkGray),
-                                    );
-                                    let mut lines = vec![Line::styled(
-                                        format!(
-                                            "  Running command '{}' {}",
-                                            command.command, indicator
-                                        ),
-                                        ratatui::style::Style::default().fg(color),
-                                    )];
-                                    if !command.output.is_empty() {
-                                        lines.push(h_border.clone());
-                                        let output_lines = command
-                                            .output
-                                            .replace("\t", "    ")
-                                            .lines()
-                                            .map(|l| {
-                                                format!(
-                                                    " {}",
-                                                    l.chars()
-                                                        .take(area.width as usize - 3)
-                                                        .collect::<String>()
-                                                )
-                                            })
-                                            .collect::<Vec<_>>();
-                                        lines.extend(
-                                            (&output_lines
-                                                [output_lines.len().saturating_sub(10)..])
-                                                .iter()
-                                                .map(|l| Line::raw(l.clone())),
-                                        );
-                                        lines.push(h_border);
-                                    }
-                                    lines
-                                }
                                 MessageBlock::Code(code) => {
                                     let code_block_lines = if code.folded {
                                         vec![Line::styled(
@@ -788,7 +714,7 @@ impl Widget for &mut ChatHistoryWidget {
                                                 format!("Change to {} (click to expand)", &filename)
                                             } else {
                                                 title_case(
-                                                    &format!(
+                                                    format!(
                                                         "{} code block (click to expand)",
                                                         &code.language
                                                     )
@@ -988,7 +914,6 @@ impl Widget for &mut DiffReviewWidget {
 #[derive(Clone, Debug)]
 struct SelectSessionWidget {
     sessions: Vec<api::ChatSession>,
-    current_session: api::ChatSession,
     selected_idx: usize,
     v_scroll_position: usize,
 }
@@ -1111,10 +1036,7 @@ impl Widget for &mut ACIVizWidget {
             ]);
             let [file_area, test_area] = vertical.areas(file_area);
 
-            let test_output = test_output
-                .lines()
-                .map(|line| Line::raw(line))
-                .collect::<Vec<_>>();
+            let test_output = test_output.lines().map(Line::raw).collect::<Vec<_>>();
             let test_len = test_output.len();
             let test_paragraph = Paragraph::new(test_output)
                 .block(Block::new().borders(Borders::TOP).title("─ Test Output "))
@@ -1140,10 +1062,7 @@ impl Widget for &mut ACIVizWidget {
             ]);
             let [file_area, test_area] = vertical.areas(file_area);
 
-            let test_output = run_cmd_output
-                .lines()
-                .map(|line| Line::raw(line))
-                .collect::<Vec<_>>();
+            let test_output = run_cmd_output.lines().map(Line::raw).collect::<Vec<_>>();
             let test_len = test_output.len();
             let test_paragraph = Paragraph::new(test_output)
                 .block(
@@ -1278,7 +1197,7 @@ impl App {
             }
             let message_txt = &message.into_text().unwrap();
 
-            let data: api::ws::Message = match serde_json::from_str(&message_txt) {
+            let data: api::ws::Message = match serde_json::from_str(message_txt) {
                 Ok(data) => data,
                 Err(e) => {
                     eprintln!("JSON Parse error: {}", e);
@@ -1301,13 +1220,8 @@ impl App {
                         api::ws::ChatMessageBody::StreamingToken { token, .. } => {
                             let mut scrollback = scrollback.lock().unwrap();
                             let last_msg = scrollback.last_mut().unwrap();
-                            loop {
-                                match last_msg.blocks.last() {
-                                    Some(MessageBlock::Thinking(_)) => {
-                                        last_msg.blocks.pop();
-                                    }
-                                    _ => break,
-                                }
+                            while let Some(MessageBlock::Thinking(_)) = last_msg.blocks.last() {
+                                last_msg.blocks.pop();
                             }
                             last_msg.append(&token.text);
                         }
@@ -1331,9 +1245,9 @@ impl App {
                                 last.finalized = true;
                             }
 
-                            revert(&repo_path).unwrap();
+                            revert(repo_path).unwrap();
                             if let Some(diff) =
-                                process_chat_message(&repo_path, &output_modified_files).unwrap()
+                                process_chat_message(repo_path, &output_modified_files).unwrap()
                             {
                                 if !diff.is_empty() {
                                     let mut state = state.lock().unwrap();
@@ -1471,16 +1385,17 @@ impl App {
                                         "Received ACI start message but already in ACI state"
                                     ));
                                 }
-                                api::ws::ACIMessage::Scroll { scroll_position } => {
+                                api::ws::ACIMessage::Scroll {
+                                    status,
+                                    scroll_position,
+                                } => {
                                     widget.in_scroll = true;
                                     widget.target_scroll_position = scroll_position;
                                     widget.anim_scroll_time = Instant::now();
-                                    widget.status = format!(
-                                        "Looking through {}",
-                                        widget.files[widget.current_idx]
-                                    );
+                                    widget.status = status;
                                 }
                                 api::ws::ACIMessage::Switch {
+                                    status,
                                     active_file,
                                     new_contents,
                                     scroll_position,
@@ -1491,7 +1406,7 @@ impl App {
                                     widget.target_scroll_position = scroll_position;
                                     widget.anim_scroll_time = Instant::now();
                                     widget.in_scroll = true;
-                                    widget.status = format!("Looking through {}", active_file);
+                                    widget.status = status;
                                     if let Some(current_idx) =
                                         widget.files.iter().position(|f| *f == active_file)
                                     {
@@ -1501,13 +1416,13 @@ impl App {
                                         widget.current_idx = widget.files.len() - 1;
                                     }
                                 }
-                                api::ws::ACIMessage::Close => {
+                                api::ws::ACIMessage::Close { status } => {
                                     // We'll get a switch immediately after this for the new active file, so don't need to clear contents.
-                                    widget.status =
-                                        format!("Closed {}", widget.files[widget.current_idx]);
+                                    widget.status = status;
                                     widget.files.remove(widget.current_idx);
                                 }
                                 api::ws::ACIMessage::Create {
+                                    status,
                                     active_file,
                                     new_contents,
                                     files,
@@ -1520,7 +1435,7 @@ impl App {
                                     widget.target_scroll_position = scroll_position;
                                     widget.anim_scroll_time = Instant::now();
                                     widget.in_scroll = true;
-                                    widget.status = format!("Looking through {}", active_file);
+                                    widget.status = status;
                                     if let Some(current_idx) =
                                         widget.files.iter().position(|f| *f == active_file)
                                     {
@@ -1531,6 +1446,7 @@ impl App {
                                     }
                                 }
                                 api::ws::ACIMessage::Edit {
+                                    status,
                                     new_contents,
                                     scroll_position,
                                     changed_range,
@@ -1545,17 +1461,17 @@ impl App {
                                     widget.anim_scroll_position = scroll_position.saturating_sub(5);
                                     widget.target_scroll_position =
                                         scroll_position.saturating_sub(5);
-                                    widget.status = format!(
-                                        "Made changes to {}",
-                                        widget.files[widget.current_idx]
-                                    );
+                                    widget.status = status;
                                 }
-                                api::ws::ACIMessage::Test { test_output } => {
+                                api::ws::ACIMessage::Test {
+                                    status,
+                                    test_output,
+                                } => {
                                     widget.test_output = Some(test_output.replace("\t", "    "));
-                                    widget.status = format!(
-                                        "Ran tests for {}",
-                                        widget.files[widget.current_idx]
-                                    );
+                                    widget.status = status;
+                                }
+                                api::ws::ACIMessage::Status { status } => {
+                                    widget.status = status;
                                 }
                                 api::ws::ACIMessage::End => {
                                     *state = AppState::Chat;
@@ -1808,11 +1724,11 @@ impl App {
                                 .saturating_add(1)
                                 .clamp(0, self.chat_history.scroll_max);
                         }
-                        event::MouseEventKind::Up(btn) if btn == MouseButton::Left => {
+                        event::MouseEventKind::Up(MouseButton::Left) => {
                             let mut messages = self.chat_history.messages.lock().unwrap();
 
                             if let Ok(mut clipboard_ctx) = copypasta::ClipboardContext::new() {
-                                for ((start, end), block) in self
+                                for ((start, _end), block) in self
                                     .chat_history
                                     .message_hitboxes
                                     .iter()
@@ -1833,22 +1749,19 @@ impl App {
                             let mut hitboxes_iter = self.chat_history.code_block_hitboxes.iter();
                             for msg in messages.iter_mut() {
                                 for block in &mut msg.blocks {
-                                    match block {
-                                        MessageBlock::Code(code) => {
-                                            let (start, end) = hitboxes_iter.next().unwrap();
-                                            // -1 for the border of chat history
-                                            if (*start as isize
+                                    if let MessageBlock::Code(code) = block {
+                                        let (start, end) = hitboxes_iter.next().unwrap();
+                                        // -1 for the border of chat history
+                                        if (*start as isize
+                                            - self.chat_history.scroll_position as isize)
+                                            < (mouse.row as isize)
+                                            && (*end as isize
                                                 - self.chat_history.scroll_position as isize)
-                                                <= (mouse.row as isize) - 1
-                                                && (*end as isize
-                                                    - self.chat_history.scroll_position as isize)
-                                                    > (mouse.row as isize) - 1
-                                            {
-                                                code.folded = !code.folded;
-                                                msg.block_line_cache.1.clear();
-                                            }
+                                                > (mouse.row as isize) - 1
+                                        {
+                                            code.folded = !code.folded;
+                                            msg.block_line_cache.1.clear();
                                         }
-                                        _ => {}
                                     }
                                 }
                             }
@@ -1978,7 +1891,6 @@ impl App {
                             None => {
                                 *state = AppState::SelectSession(SelectSessionWidget {
                                     sessions: self.chat_history.sessions.clone(),
-                                    current_session: self.session.clone(),
                                     selected_idx: 0,
                                     v_scroll_position: 0,
                                 })
@@ -2065,7 +1977,7 @@ impl App {
             let modified_files = list_changed_files(&self.repo_path)?
                 .into_iter()
                 .map(|path| {
-                    let content = std::fs::read_to_string(&self.repo_path.join(&path))
+                    let content = std::fs::read_to_string(self.repo_path.join(&path))
                         .unwrap_or("".to_string());
                     api::ws::ChatModifiedFile {
                         name: path.file_name().unwrap().to_str().unwrap().to_string(),
@@ -2077,14 +1989,13 @@ impl App {
                 .collect();
 
             write
-                .send(Message::Text(
-                    serde_json::to_string(&api::ws::Message::Chat(api::ws::ChatMessage {
+                .send(Message::Text(serde_json::to_string(
+                    &api::ws::Message::Chat(api::ws::ChatMessage {
                         message: input.clone(),
                         modified_files,
                         request_type_analysis: false,
-                    }))?
-                    .into(),
-                ))
+                    }),
+                )?))
                 .await?;
         }
 
@@ -2127,14 +2038,13 @@ pub async fn start_chat(
         let (mut ws_stream, _) = connect_async(url).await.expect("Failed to connect");
 
         ws_stream
-            .send(Message::Text(
-                serde_json::to_string(&api::ws::Message::Auth(api::ws::AuthMessage {
-                    feature_id: feature.id.clone(),
-                    session_id: session.id.clone(),
+            .send(Message::Text(serde_json::to_string(
+                &api::ws::Message::Auth(api::ws::AuthMessage {
+                    feature_id: feature.id,
+                    session_id: session.id,
                     token: client.token.clone(),
-                }))?
-                .into(),
-            ))
+                }),
+            )?))
             .await?;
 
         debug!("Connected to chat");

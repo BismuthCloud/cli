@@ -34,7 +34,7 @@ impl FromStr for IdOrName {
     type Err = &'static str;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(s.parse::<u64>()
-            .map(|i| IdOrName::Id(i))
+            .map(IdOrName::Id)
             .unwrap_or_else(|_| IdOrName::Name(s.to_string())))
     }
 }

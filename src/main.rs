@@ -8,13 +8,13 @@ use reqwest_eventsource::EventSource;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read as _, Write as _};
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Command;
 use std::time::Duration;
 use tokio::fs::File;
-use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio_util::io::StreamReader;
 use url::Url;
 
@@ -141,7 +141,7 @@ async fn confirm(prompt: impl Into<String>, default: bool) -> Result<bool> {
     if confirm.is_empty() || (confirm != "y" && confirm != "n") {
         return Ok(default);
     }
-    return Ok(confirm == "y");
+    Ok(confirm == "y")
 }
 
 async fn press_any_key(msg: &str) -> Result<()> {
@@ -150,7 +150,7 @@ async fn press_any_key(msg: &str) -> Result<()> {
     let termios = termios::Termios::from_fd(0).unwrap();
     let mut new_termios = termios.clone();
     new_termios.c_lflag &= !(termios::ICANON | termios::ECHO);
-    termios::tcsetattr(0, termios::TCSANOW, &mut new_termios).unwrap();
+    termios::tcsetattr(0, termios::TCSANOW, &new_termios).unwrap();
     std::io::stdin().read(&mut [0])?;
     termios::tcsetattr(0, termios::TCSANOW, &termios).unwrap();
     Ok(())
@@ -267,11 +267,11 @@ fn set_bismuth_remote(repo: &Path, project: &api::Project) -> Result<()> {
     match git_repo.find_remote("bismuth") {
         Ok(_) => {
             debug!("Updating existing bismuth remote URL");
-            git_repo.remote_set_url("bismuth", &git_url.to_string())?;
+            git_repo.remote_set_url("bismuth", git_url.as_ref())?;
         }
         Err(_) => {
             debug!("Adding new bismuth remote");
-            git_repo.remote("bismuth", &git_url.to_string())?;
+            git_repo.remote("bismuth", git_url.as_ref())?;
         }
     }
     Ok(())
@@ -321,9 +321,9 @@ async fn get_project_and_feature_for_repo(
             ));
         }
     }
-    return Err(anyhow!(
+    Err(anyhow!(
         "Unable to determine project (no matching projects found)"
-    ));
+    ))
 }
 
 async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Result<()> {
@@ -594,7 +594,7 @@ fn check_not_pushed(repo: &Path, project: &api::Project, feature: &api::Feature)
         .target()
         .ok_or(anyhow!("No such branch in bismuth remote?"))?;
 
-    return Ok(origin_commit != bismuth_commit);
+    Ok(origin_commit != bismuth_commit)
 }
 
 async fn feature_deploy(
@@ -1545,7 +1545,7 @@ async fn _main() -> Result<()> {
 
                     let existing_session = match session_name {
                         Some(session_name) => {
-                            resolve_chat_session(&client, &project, &feature, &session_name)
+                            resolve_chat_session(&client, &project, &feature, session_name)
                                 .await
                                 .ok()
                         }
@@ -1603,7 +1603,7 @@ async fn _main() -> Result<()> {
                 }
                 Some(cli::ChatSubcommand::RenameSession { old_name, new_name }) => {
                     let session =
-                        resolve_chat_session(&client, &project, &feature, &old_name).await?;
+                        resolve_chat_session(&client, &project, &feature, old_name).await?;
                     client
                         .put(&format!(
                             "/projects/{}/features/{}/chat/sessions/{}",
@@ -1618,7 +1618,7 @@ async fn _main() -> Result<()> {
                     Ok(())
                 }
                 Some(cli::ChatSubcommand::DeleteSession { name }) => {
-                    let session = resolve_chat_session(&client, &project, &feature, &name).await?;
+                    let session = resolve_chat_session(&client, &project, &feature, name).await?;
                     client
                         .delete(&format!(
                             "/projects/{}/features/{}/chat/sessions/{}",

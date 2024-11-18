@@ -12,15 +12,9 @@ pub enum SubscriptionType {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-pub struct Subscription {
-    pub r#type: SubscriptionType,
-}
-
-#[derive(Clone, Debug, Deserialize)]
 pub struct Organization {
     pub id: u64,
     pub name: String,
-    pub subscription: Subscription,
 }
 
 impl Display for Organization {
@@ -41,7 +35,6 @@ pub struct Project {
     pub id: u64,
     pub name: String,
     pub hash: String,
-    pub organization: Organization,
     pub features: Vec<Feature>,
     pub clone_token: String,
     pub github_repo: Option<String>,
@@ -163,8 +156,6 @@ pub struct LLMConfigurationRequest {
 }
 
 pub mod ws {
-    use std::collections::HashMap;
-
     use serde::{ser::SerializeStruct, Deserialize, Serialize};
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -261,27 +252,37 @@ pub mod ws {
             scroll_position: usize,
         },
         Scroll {
+            status: String,
             scroll_position: usize,
         },
         Create {
+            status: String,
             active_file: String,
             new_contents: String,
             files: Vec<String>,
             scroll_position: usize,
         },
         Switch {
+            status: String,
             active_file: String,
             new_contents: String,
             scroll_position: usize,
         },
-        Close,
+        Close {
+            status: String,
+        },
         Edit {
+            status: String,
             new_contents: String,
             scroll_position: usize,
             changed_range: (usize, usize),
         },
         Test {
+            status: String,
             test_output: String,
+        },
+        Status {
+            status: String,
         },
         End,
     }
