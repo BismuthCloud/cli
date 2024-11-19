@@ -296,6 +296,7 @@ pub mod ws {
         RunCommand(RunCommandMessage),
         RunCommandResponse(RunCommandResponse),
         ACI(ACIMessage),
+        KillGeneration,
         Error(String),
     }
 
@@ -326,6 +327,11 @@ pub mod ws {
                     let mut state = serializer.serialize_struct("Message", 4)?;
                     state.serialize_field("type", "RUN_COMMAND_RESPONSE")?;
                     state.serialize_field("runCommandResponse", response)?;
+                    state.end()
+                }
+                Message::KillGeneration => {
+                    let mut state = serializer.serialize_struct("Message", 1)?;
+                    state.serialize_field("type", "KILL_GENERATION")?;
                     state.end()
                 }
                 // ResponseState is one-way, no need to serialize

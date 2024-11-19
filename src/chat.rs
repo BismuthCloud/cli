@@ -1798,6 +1798,15 @@ impl App {
 
                             *state = AppState::ChangeSession(session);
                         }
+                        KeyCode::Char('c')
+                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                        {
+                            write
+                                .send(Message::Text(serde_json::to_string(
+                                    &api::ws::Message::KillGeneration,
+                                )?))
+                                .await?;
+                        }
                         KeyCode::Enter => {
                             // ALT+enter for manual newlines
                             if key.modifiers.contains(event::KeyModifiers::ALT)
@@ -1828,8 +1837,23 @@ impl App {
                     }
                     _ => (),
                 },
-                // Command running requires the ACI widget to work, so dont allow ESC to hide or similar
-                AppState::ACI(_) => {}
+                AppState::ACI(_) => match event::read()? {
+                    Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
+                        KeyCode::Char('c')
+                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                        {
+                            write
+                                .send(Message::Text(serde_json::to_string(
+                                    &api::ws::Message::KillGeneration,
+                                )?))
+                                .await?;
+                            let mut state = self.state.lock().unwrap();
+                            *state = AppState::Chat;
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                },
             }
         }
     }
