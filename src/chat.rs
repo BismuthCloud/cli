@@ -1778,6 +1778,26 @@ impl App {
                             let mut state = self.state.lock().unwrap();
                             *state = AppState::Exit;
                         }
+                        KeyCode::Char('n')
+                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                        {
+                            let session = self
+                                .client
+                                .post(&format!(
+                                    "/projects/{}/features/{}/chat/sessions",
+                                    self.project.id, self.feature.id
+                                ))
+                                .json(&json!({ "name": None::<&str> }))
+                                .send()
+                                .await?
+                                .error_body_for_status()
+                                .await?
+                                .json()
+                                .await?;
+                            let mut state = self.state.lock().unwrap();
+
+                            *state = AppState::ChangeSession(session);
+                        }
                         KeyCode::Enter => {
                             // ALT+enter for manual newlines
                             if key.modifiers.contains(event::KeyModifiers::ALT)
