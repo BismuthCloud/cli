@@ -2047,7 +2047,7 @@ pub async fn start_chat(
         > 8 * 1024 * 1024
     {
         return Err(anyhow!(
-            "There are too many unpushed changes. Please `git push bismuth` and try again."
+            "There are too many unpushed changes. Please commit, `git push bismuth`, and try again."
         ));
     }
 
