@@ -1303,6 +1303,7 @@ impl App {
                                 .stdout(std::process::Stdio::piped())
                                 .stderr(std::process::Stdio::piped())
                                 .current_dir(&repo_path)
+                                .env("TERM", "dumb")
                                 .spawn()
                                 .unwrap();
 
