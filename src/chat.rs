@@ -1036,7 +1036,10 @@ impl Widget for &mut ACIVizWidget {
             ]);
             let [file_area, test_area] = vertical.areas(file_area);
 
-            let test_output = test_output.lines().map(Line::raw).collect::<Vec<_>>();
+            let test_output = test_output
+                .lines()
+                .map(|l| Line::raw(l.replace("\t", "    ")))
+                .collect::<Vec<_>>();
             let test_len = test_output.len();
             let test_paragraph = Paragraph::new(test_output)
                 .block(Block::new().borders(Borders::TOP).title("─ Test Output "))
@@ -1062,7 +1065,10 @@ impl Widget for &mut ACIVizWidget {
             ]);
             let [file_area, test_area] = vertical.areas(file_area);
 
-            let test_output = run_cmd_output.lines().map(Line::raw).collect::<Vec<_>>();
+            let test_output = run_cmd_output
+                .lines()
+                .map(|l| Line::raw(l.replace("\t", "    ")))
+                .collect::<Vec<_>>();
             let test_len = test_output.len();
             let test_paragraph = Paragraph::new(test_output)
                 .block(
