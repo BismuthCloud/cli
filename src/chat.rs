@@ -2016,6 +2016,21 @@ pub async fn start_chat(
 ) -> Result<()> {
     let repo_path = repo_path.to_path_buf();
 
+    if list_changed_files(&repo_path)?
+        .into_iter()
+        .map(|path| {
+            std::fs::metadata(&repo_path.join(&path))
+                .map(|s| s.len())
+                .unwrap_or(0)
+        })
+        .sum::<u64>()
+        > 8 * 1024 * 1024
+    {
+        return Err(anyhow!(
+            "There are too many unpushed changes. Please `git push bismuth` and try again."
+        ));
+    }
+
     let mut session = session.clone();
 
     let status = loop {
