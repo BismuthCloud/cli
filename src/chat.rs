@@ -141,15 +141,26 @@ fn process_chat_message(
     }
 
     for mf in modified_files {
-        trace!("Writing file: {}", mf.project_path);
-        let mut file_name = mf.project_path.as_str();
-        file_name = file_name.trim_start_matches('/');
-        let full_path = repo_path.join(file_name);
-        if !full_path.starts_with(&repo_path) {
-            return Err(anyhow::anyhow!("Invalid file path"));
+        if mf.deleted.unwrap_or_default() {
+            trace!("Deleting file: {}", mf.project_path);
+            let mut file_name = mf.project_path.as_str();
+            file_name = file_name.trim_start_matches('/');
+            let full_path = repo_path.join(file_name);
+            if !full_path.starts_with(&repo_path) {
+                return Err(anyhow!("Invalid file path"));
+            }
+            let _ = std::fs::remove_file(full_path);
+        } else {
+            trace!("Writing file: {}", mf.project_path);
+            let mut file_name = mf.project_path.as_str();
+            file_name = file_name.trim_start_matches('/');
+            let full_path = repo_path.join(file_name);
+            if !full_path.starts_with(&repo_path) {
+                return Err(anyhow::anyhow!("Invalid file path"));
+            }
+            std::fs::create_dir_all(full_path.parent().unwrap())?;
+            std::fs::write(full_path, &mf.content)?;
         }
-        std::fs::create_dir_all(full_path.parent().unwrap())?;
-        std::fs::write(full_path, &mf.content)?;
     }
 
     index.add_all(["*"], git2::IndexAddOption::DEFAULT, None)?;
@@ -963,7 +974,7 @@ impl Widget for &mut SelectSessionWidget {
 #[derive(Clone, Debug)]
 struct ACIVizWidget {
     files: Vec<String>,
-    current_idx: usize,
+    current_idx: Option<usize>,
     contents: CodeBlock,
     in_scroll: bool,
     anim_scroll_position: usize,
@@ -997,18 +1008,22 @@ impl Widget for &mut ACIVizWidget {
         ]);
         let [tab_area, file_area, status_area] = vertical.areas(area);
 
-        Tabs::new(
+        let mut tabs = Tabs::new(
             self.files
                 .iter()
                 .map(|file| format!(" {} ", file))
                 .collect::<Vec<_>>(),
         )
-        .select(self.current_idx)
         .divider("")
         .padding("", "")
         .style(Style::default().bg(ratatui::style::Color::DarkGray))
-        .highlight_style(Style::default().bg(ratatui::style::Color::Blue))
-        .render(tab_area, buf);
+        .highlight_style(Style::default().bg(ratatui::style::Color::DarkGray));
+        if let Some(idx) = self.current_idx {
+            tabs = tabs
+                .select(idx)
+                .highlight_style(Style::default().bg(ratatui::style::Color::Blue));
+        }
+        tabs.render(tab_area, buf);
 
         let lines = self.contents.lines();
         let scroll_max = lines.len().saturating_sub(file_area.height as usize);
@@ -1373,7 +1388,7 @@ impl App {
                         let mut state = state.lock().unwrap();
                         *state = AppState::ACI(ACIVizWidget {
                             files,
-                            current_idx,
+                            current_idx: Some(current_idx),
                             contents: CodeBlock::new(Some(&active_file), None, &new_contents),
                             in_scroll: true,
                             anim_scroll_position: scroll_position,
@@ -1421,16 +1436,17 @@ impl App {
                                     if let Some(current_idx) =
                                         widget.files.iter().position(|f| *f == active_file)
                                     {
-                                        widget.current_idx = current_idx;
+                                        widget.current_idx = Some(current_idx);
                                     } else {
                                         widget.files.push(active_file);
-                                        widget.current_idx = widget.files.len() - 1;
+                                        widget.current_idx = Some(widget.files.len() - 1);
                                     }
                                 }
                                 api::ws::ACIMessage::Close { status } => {
-                                    // We'll get a switch immediately after this for the new active file, so don't need to clear contents.
                                     widget.status = status;
-                                    widget.files.remove(widget.current_idx);
+                                    widget.files.remove(widget.current_idx.unwrap());
+                                    widget.current_idx = None;
+                                    widget.contents = CodeBlock::new(None, None, "");
                                 }
                                 api::ws::ACIMessage::Create {
                                     status,
@@ -1447,11 +1463,13 @@ impl App {
                                     widget.anim_scroll_time = Instant::now();
                                     widget.in_scroll = true;
                                     widget.status = status;
-                                    widget.current_idx = widget
-                                        .files
-                                        .iter()
-                                        .position(|f| *f == active_file)
-                                        .unwrap();
+                                    widget.current_idx = Some(
+                                        widget
+                                            .files
+                                            .iter()
+                                            .position(|f| *f == active_file)
+                                            .unwrap(),
+                                    );
                                 }
                                 api::ws::ACIMessage::Edit {
                                     status,
@@ -1460,7 +1478,7 @@ impl App {
                                     changed_range,
                                 } => {
                                     widget.contents = CodeBlock::new(
-                                        Some(&widget.files[widget.current_idx]),
+                                        Some(&widget.files[widget.current_idx.unwrap()]),
                                         None,
                                         &new_contents,
                                     );
