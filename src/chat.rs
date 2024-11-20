@@ -498,7 +498,8 @@ impl ChatMessage {
     pub fn new(user: ChatMessageUser, content: &str) -> Self {
         let content = content
             .replace("\n<BCODE>", "\n")
-            .replace("\n</BCODE>", "\n");
+            .replace("\n</BCODE>", "\n")
+            .replace("\r", "\n");
         let mut blocks = Self::parse_md(&content);
         let prefix_spans = Self::format_user(&user);
 
@@ -583,6 +584,7 @@ impl ChatMessage {
         if let Some(MessageBlock::Code(code_block)) = blocks.last_mut() {
             code_block.folded = false;
         }
+        trace!("Parsed blocks: {:#?}", blocks);
         blocks
     }
 
@@ -591,7 +593,8 @@ impl ChatMessage {
         self.raw = self
             .raw
             .replace("\n<BCODE>", "\n")
-            .replace("\n</BCODE>", "\n");
+            .replace("\n</BCODE>", "\n")
+            .replace("\r", "\n");
         let mut blocks = Self::parse_md(&self.raw);
         let prefix_spans = Self::format_user(&self.user);
 
@@ -1219,6 +1222,7 @@ impl App {
                     scrollback.push(ChatMessage::new(ChatMessageUser::AI, ""));
                 }
             }
+            trace!("Received message: {:#?}", data);
             match data {
                 api::ws::Message::Chat(api::ws::ChatMessage { message, .. }) => {
                     let stuff: api::ws::ChatMessageBody = serde_json::from_str(&message).unwrap();
@@ -1443,14 +1447,11 @@ impl App {
                                     widget.anim_scroll_time = Instant::now();
                                     widget.in_scroll = true;
                                     widget.status = status;
-                                    if let Some(current_idx) =
-                                        widget.files.iter().position(|f| *f == active_file)
-                                    {
-                                        widget.current_idx = current_idx;
-                                    } else {
-                                        widget.files.push(active_file);
-                                        widget.current_idx = widget.files.len() - 1;
-                                    }
+                                    widget.current_idx = widget
+                                        .files
+                                        .iter()
+                                        .position(|f| *f == active_file)
+                                        .unwrap();
                                 }
                                 api::ws::ACIMessage::Edit {
                                     status,
@@ -1495,8 +1496,10 @@ impl App {
         }
     }
 
-    async fn run(&mut self) -> Result<Option<api::ChatSession>> {
-        let mut terminal = terminal::init()?;
+    async fn run(
+        &mut self,
+        terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    ) -> Result<Option<api::ChatSession>> {
         terminal.clear()?; // needed to clear session selection screen
 
         let (mut write_sink, mut read) = self.ws_stream.take().unwrap().split();
@@ -1933,11 +1936,18 @@ impl App {
                         let name = input.split_once(' ').map(|(_, msg)| msg);
                         match name {
                             None => {
-                                *state = AppState::SelectSession(SelectSessionWidget {
-                                    sessions: self.chat_history.sessions.clone(),
-                                    selected_idx: 0,
-                                    v_scroll_position: 0,
-                                })
+                                if self.chat_history.sessions.is_empty() {
+                                    *state = AppState::Popup(
+                                        "Error".to_string(),
+                                        "\n\n    There are no other sessions    \n\n".to_string(),
+                                    );
+                                } else {
+                                    *state = AppState::SelectSession(SelectSessionWidget {
+                                        sessions: self.chat_history.sessions.clone(),
+                                        selected_idx: 0,
+                                        v_scroll_position: 0,
+                                    })
+                                }
                             }
                             Some(name) => {
                                 match self.chat_history.sessions.iter().find(|s| s.name() == name) {
@@ -2076,6 +2086,7 @@ pub async fn start_chat(
     }
 
     let mut session = session.clone();
+    let mut terminal = terminal::init()?;
 
     let status = loop {
         let scrollback: Vec<ChatMessage> = client
@@ -2120,7 +2131,7 @@ pub async fn start_chat(
             client,
         );
 
-        let status = app.run().await;
+        let status = app.run(&mut terminal).await;
         match status {
             Ok(Some(new_session)) => {
                 session = new_session;
@@ -2212,6 +2223,7 @@ fn centered_paragraph(paragraph: &Paragraph, r: Rect) -> Rect {
 mod terminal {
     use std::{io, process::Command};
 
+    use log::debug;
     use ratatui::{
         backend::CrosstermBackend,
         crossterm::{
@@ -2254,6 +2266,7 @@ mod terminal {
 
     /// Restores the terminal to its original state.
     pub fn restore() {
+        debug!("Restoring terminal");
         if let Err(err) = execute!(
             io::stdout(),
             PopKeyboardEnhancementFlags,
