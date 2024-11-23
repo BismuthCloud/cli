@@ -240,6 +240,7 @@ pub mod ws {
     pub struct RunCommandResponse {
         pub exit_code: i32,
         pub output: String,
+        pub modified_files: Vec<ChatModifiedFile>,
     }
 
     #[derive(Debug, Deserialize)]

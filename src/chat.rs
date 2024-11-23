@@ -31,7 +31,9 @@ use syntect::util::LinesWithEndings;
 use tokio::{io::AsyncBufReadExt as _, net::TcpStream, sync::mpsc};
 use tokio_stream::wrappers::LinesStream;
 use tokio_tungstenite::{
-    connect_async, tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream,
+    connect_async,
+    tungstenite::{http::status, protocol::Message},
+    MaybeTlsStream, WebSocketStream,
 };
 use url::Url;
 
@@ -101,6 +103,65 @@ fn list_changed_files(repo_path: &Path) -> Result<Vec<PathBuf>> {
         }
     }
     Ok(changed_files.into_iter().collect())
+}
+
+/// Return ChatModifiedFile objects for each file in the working directory that is untracked or staged.
+/// This is used to capture changes that arise from command running and feed those back to the backend.
+fn command_modified_files(repo_path: &Path) -> Result<Vec<ChatModifiedFile>> {
+    let repo = git2::Repository::open(repo_path)?;
+    let statuses = repo.statuses(None)?;
+    Ok(statuses
+        .iter()
+        .filter_map(|status| match status.status() {
+            git2::Status::WT_NEW
+            | git2::Status::WT_MODIFIED
+            | git2::Status::INDEX_NEW
+            | git2::Status::INDEX_MODIFIED => {
+                let path = PathBuf::from(status.path().unwrap());
+                Some(ChatModifiedFile {
+                    name: path.file_name().unwrap().to_string_lossy().to_string(),
+                    project_path: path.to_string_lossy().to_string(),
+                    content: std::fs::read_to_string(repo_path.join(&path))
+                        .unwrap_or("".to_string()),
+                    deleted: Some(false),
+                })
+            }
+            git2::Status::WT_DELETED | git2::Status::INDEX_DELETED => {
+                let path = PathBuf::from(status.path().unwrap());
+                Some(ChatModifiedFile {
+                    name: path.file_name().unwrap().to_string_lossy().to_string(),
+                    project_path: path.to_string_lossy().to_string(),
+                    content: std::fs::read_to_string(repo_path.join(&path))
+                        .unwrap_or("".to_string()),
+                    deleted: Some(true),
+                })
+            }
+            git2::Status::WT_RENAMED | git2::Status::INDEX_RENAMED => {
+                if let Some(stuff) = status.head_to_index() {
+                    let path = PathBuf::from(stuff.new_file().path().unwrap());
+                    Some(ChatModifiedFile {
+                        name: path.file_name().unwrap().to_string_lossy().to_string(),
+                        project_path: path.to_string_lossy().to_string(),
+                        content: std::fs::read_to_string(repo_path.join(&path))
+                            .unwrap_or("".to_string()),
+                        deleted: Some(false),
+                    })
+                } else if let Some(stuff) = status.index_to_workdir() {
+                    let path = PathBuf::from(stuff.new_file().path().unwrap());
+                    Some(ChatModifiedFile {
+                        name: path.file_name().unwrap().to_string_lossy().to_string(),
+                        project_path: path.to_string_lossy().to_string(),
+                        content: std::fs::read_to_string(repo_path.join(&path))
+                            .unwrap_or("".to_string()),
+                        deleted: Some(false),
+                    })
+                } else {
+                    unreachable!();
+                }
+            }
+            _ => None,
+        })
+        .collect())
 }
 
 fn process_chat_message(
@@ -1369,7 +1430,11 @@ impl App {
                         let _ = write_
                             .send(Message::Text(
                                 serde_json::to_string(&api::ws::Message::RunCommandResponse(
-                                    RunCommandResponse { exit_code, output },
+                                    RunCommandResponse {
+                                        exit_code,
+                                        output,
+                                        modified_files: command_modified_files(&repo_path).unwrap(),
+                                    },
                                 ))
                                 .unwrap(),
                             ))
