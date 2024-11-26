@@ -1,6 +1,6 @@
 use std::{
     cell::OnceCell,
-    collections::{HashSet, VecDeque},
+    collections::HashSet,
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
@@ -102,64 +102,63 @@ fn list_changed_files(repo_path: &Path) -> Result<Vec<PathBuf>> {
             _ => {}
         }
     }
+
+    let config = bismuth_toml::parse_config(repo_path)?;
+    changed_files.extend(config.chat.additional_files.iter().map(PathBuf::from));
+
     Ok(changed_files.into_iter().collect())
 }
 
 /// Return ChatModifiedFile objects for each file in the working directory that is untracked or staged.
 /// This is used to capture changes that arise from command running and feed those back to the backend.
 fn command_modified_files(repo_path: &Path) -> Result<Vec<ChatModifiedFile>> {
+    let config = bismuth_toml::parse_config(repo_path)?;
+    let block_globset = {
+        let mut builder = globset::GlobSetBuilder::new();
+        for glob in &config.chat.block_globs {
+            builder.add(glob.clone());
+        }
+        builder.build()?
+    };
+
     let repo = git2::Repository::open(repo_path)?;
     let statuses = repo.statuses(None)?;
     Ok(statuses
         .iter()
-        .filter_map(|status| match status.status() {
+        .flat_map(|status| match status.status() {
             git2::Status::WT_NEW
             | git2::Status::WT_MODIFIED
             | git2::Status::INDEX_NEW
             | git2::Status::INDEX_MODIFIED => {
-                let path = PathBuf::from(status.path().unwrap());
-                Some(ChatModifiedFile {
-                    name: path.file_name().unwrap().to_string_lossy().to_string(),
-                    project_path: path.to_string_lossy().to_string(),
-                    content: std::fs::read_to_string(repo_path.join(&path))
-                        .unwrap_or("".to_string()),
-                    deleted: Some(false),
-                })
+                vec![PathBuf::from(status.path().unwrap())]
             }
             git2::Status::WT_DELETED | git2::Status::INDEX_DELETED => {
-                let path = PathBuf::from(status.path().unwrap());
-                Some(ChatModifiedFile {
-                    name: path.file_name().unwrap().to_string_lossy().to_string(),
-                    project_path: path.to_string_lossy().to_string(),
-                    content: std::fs::read_to_string(repo_path.join(&path))
-                        .unwrap_or("".to_string()),
-                    deleted: Some(true),
-                })
+                vec![PathBuf::from(status.path().unwrap())]
             }
             git2::Status::WT_RENAMED | git2::Status::INDEX_RENAMED => {
                 if let Some(stuff) = status.head_to_index() {
-                    let path = PathBuf::from(stuff.new_file().path().unwrap());
-                    Some(ChatModifiedFile {
-                        name: path.file_name().unwrap().to_string_lossy().to_string(),
-                        project_path: path.to_string_lossy().to_string(),
-                        content: std::fs::read_to_string(repo_path.join(&path))
-                            .unwrap_or("".to_string()),
-                        deleted: Some(false),
-                    })
+                    vec![
+                        PathBuf::from(stuff.old_file().path().unwrap()),
+                        PathBuf::from(stuff.new_file().path().unwrap()),
+                    ]
                 } else if let Some(stuff) = status.index_to_workdir() {
-                    let path = PathBuf::from(stuff.new_file().path().unwrap());
-                    Some(ChatModifiedFile {
-                        name: path.file_name().unwrap().to_string_lossy().to_string(),
-                        project_path: path.to_string_lossy().to_string(),
-                        content: std::fs::read_to_string(repo_path.join(&path))
-                            .unwrap_or("".to_string()),
-                        deleted: Some(false),
-                    })
+                    vec![
+                        PathBuf::from(stuff.old_file().path().unwrap()),
+                        PathBuf::from(stuff.new_file().path().unwrap()),
+                    ]
                 } else {
-                    unreachable!();
+                    vec![]
                 }
             }
-            _ => None,
+            _ => vec![],
+        })
+        .chain(config.chat.additional_files.iter().map(PathBuf::from))
+        .filter(|path| !block_globset.is_match(path.to_string_lossy().as_ref()))
+        .map(|path| ChatModifiedFile {
+            name: path.file_name().unwrap().to_string_lossy().to_string(),
+            project_path: path.to_string_lossy().to_string(),
+            content: std::fs::read_to_string(repo_path.join(&path)).unwrap_or("".to_string()),
+            deleted: Some(repo_path.join(&path).exists()),
         })
         .collect())
 }

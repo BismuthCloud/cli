@@ -43,6 +43,7 @@ copypasta = "0.10.1"
 derivative = "2.2.0"
 tokio-stream = {version = "0.1.16", features = ["io-util"]}
 toml = "0.8.19"
+globset = {version = "0.4.15", features = ["serde1"]}
 
 [dev-dependencies]
 tempfile = "3.12.0"
