@@ -21,8 +21,9 @@ pub struct ChatConfig {
     /// Defaults to .env, .env.local, .env.development.
     pub additional_files: Vec<String>,
 
-    /// File globs that should not be sent to the agent after command running, even if they would be tracked by git.
-    /// Defaults to **/node_modules/**, **/target/**, **/dist/**, **/build/**.
+    /// File globs that should not be sent to the agent, even if they would be tracked by git.
+    /// Mainly used to avoid accidentally sending large directories like node_modules in the case of a missing or misconfigured .gitignore.
+    /// Defaults to **/.*/**, venv/**, **/__pycache__/**, *.pyc, **/node_modules/**, **/target/**, **/dist/**, **/build/**
     pub block_globs: Vec<Glob>,
 }
 
@@ -36,6 +37,10 @@ impl Default for ChatConfig {
                 ".env.development".to_string(),
             ],
             block_globs: vec![
+                Glob::new("**/.*/**").unwrap(),
+                Glob::new("venv/**").unwrap(),
+                Glob::new("**/__pycache__/**").unwrap(),
+                Glob::new("*.pyc").unwrap(),
                 Glob::new("**/node_modules/**").unwrap(),
                 Glob::new("**/target/**").unwrap(),
                 Glob::new("**/dist/**").unwrap(),
@@ -53,4 +58,34 @@ pub fn parse_config(repo_root: &Path) -> Result<BismuthTOML> {
     let config_str = fs::read_to_string(config_path)?;
     let config: BismuthTOML = toml::from_str(&config_str)?;
     Ok(config)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_block_globs() {
+        let config = BismuthTOML::default();
+        let globset = {
+            let mut builder = globset::GlobSetBuilder::new();
+            for glob in &config.chat.block_globs {
+                builder.add(glob.clone());
+            }
+            builder.build().unwrap()
+        };
+
+        assert!(globset.is_match(".venv/bin/activate"));
+        assert!(globset.is_match("venv/bin/activate"));
+        assert!(globset.is_match("src/__pycache__/foo"));
+        assert!(globset.is_match("src/main.pyc"));
+
+        assert!(!globset.is_match("src/main.py"));
+
+        assert!(globset.is_match("node_modules/foo/foo.js"));
+        assert!(globset.is_match("foo/node_modules/foo/foo.js"));
+        assert!(globset.is_match("target/debug/cli"));
+        assert!(globset.is_match("dist/thing.whl"));
+        assert!(globset.is_match("build/out.o"));
+    }
 }

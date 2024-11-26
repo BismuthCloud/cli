@@ -31,9 +31,7 @@ use syntect::util::LinesWithEndings;
 use tokio::{io::AsyncBufReadExt as _, net::TcpStream, sync::mpsc};
 use tokio_stream::wrappers::LinesStream;
 use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{http::status, protocol::Message},
-    MaybeTlsStream, WebSocketStream,
+    connect_async, tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream,
 };
 use url::Url;
 
@@ -104,7 +102,14 @@ fn list_changed_files(repo_path: &Path) -> Result<Vec<PathBuf>> {
     }
 
     let config = bismuth_toml::parse_config(repo_path)?;
-    changed_files.extend(config.chat.additional_files.iter().map(PathBuf::from));
+    changed_files.extend(
+        config
+            .chat
+            .additional_files
+            .iter()
+            .filter(|p| repo_path.join(p).is_file())
+            .map(PathBuf::from),
+    );
 
     Ok(changed_files.into_iter().collect())
 }
@@ -152,8 +157,15 @@ fn command_modified_files(repo_path: &Path) -> Result<Vec<ChatModifiedFile>> {
             }
             _ => vec![],
         })
-        .chain(config.chat.additional_files.iter().map(PathBuf::from))
         .filter(|path| !block_globset.is_match(path.to_string_lossy().as_ref()))
+        .chain(
+            config
+                .chat
+                .additional_files
+                .iter()
+                .filter(|p| repo_path.join(p).is_file())
+                .map(PathBuf::from),
+        )
         .map(|path| ChatModifiedFile {
             name: path.file_name().unwrap().to_string_lossy().to_string(),
             project_path: path.to_string_lossy().to_string(),
