@@ -170,7 +170,7 @@ fn command_modified_files(repo_path: &Path) -> Result<Vec<ChatModifiedFile>> {
             name: path.file_name().unwrap().to_string_lossy().to_string(),
             project_path: path.to_string_lossy().to_string(),
             content: std::fs::read_to_string(repo_path.join(&path)).unwrap_or("".to_string()),
-            deleted: Some(repo_path.join(&path).exists()),
+            deleted: Some(!repo_path.join(&path).exists()),
         })
         .collect())
 }
