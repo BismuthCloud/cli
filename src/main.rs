@@ -966,6 +966,67 @@ async fn _main() -> Result<()> {
     )?;
 
     match &args.command {
+        cli::Command::Configure { command } => match command {
+            cli::ConfigureCommand::OpenRouter {} => {
+                let server = tiny_http::Server::http("localhost:0").map_err(|e| anyhow!(e))?;
+                let port = server.server_addr().to_ip().unwrap().port();
+                let mut url = Url::parse("https://openrouter.ai/auth").unwrap();
+                url.query_pairs_mut()
+                    .append_pair("callback_url", &format!("http://localhost:{}/", port));
+                println!(
+                    "Go to the following URL to authenticate: {}",
+                    url.to_string().blue().bold()
+                );
+                let request = tokio::task::spawn_blocking(move || {
+                    server
+                        .incoming_requests()
+                        .next()
+                        .ok_or_else(|| anyhow!("No request"))
+                })
+                .await??;
+                let code = request
+                    .url()
+                    .split("code=")
+                    .last()
+                    .expect("No code")
+                    .split("&")
+                    .next()
+                    .unwrap()
+                    .to_string();
+                debug!("Got code: {}", code);
+                let resp: serde_json::Value = reqwest::Client::new()
+                    .post("https://openrouter.ai/api/v1/auth/keys")
+                    .json(&json!({"code": code}))
+                    .send()
+                    .await?
+                    .error_body_for_status()
+                    .await?
+                    .json()
+                    .await?;
+                let key = resp.get("key").unwrap().as_str().unwrap().to_string();
+                debug!("Got key: {}", key);
+
+                client
+                    .post("/llm-configuration")
+                    .json(&api::LLMConfigurationRequest { key })
+                    .send()
+                    .await?
+                    .error_body_for_status()
+                    .await?;
+
+                request.respond(
+                    tiny_http::Response::from_string(
+                        "<html><body>Authentication successful. You may now close this window</body></html>",
+                    )
+                    .with_header(
+                        "Content-type: text/html"
+                            .parse::<tiny_http::Header>()
+                            .unwrap(),
+                    ),
+                )?;
+                Ok(())
+            }
+        },
         cli::Command::Project { command } => match command {
             cli::ProjectCommand::List => {
                 let get_projects = client

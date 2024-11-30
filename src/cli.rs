@@ -104,6 +104,11 @@ pub enum Command {
     Login,
     /// Show the CLI version
     Version,
+    /// Configure the CLI
+    Configure {
+        #[clap(subcommand)]
+        command: ConfigureCommand,
+    },
     /// Manage projects
     Project {
         #[clap(subcommand)]
@@ -186,6 +191,14 @@ pub enum Command {
         #[clap(subcommand)]
         command: Option<ChatSubcommand>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigureCommand {
+    #[clap(name = "openrouter")]
+    /// OAuth via OpenRouter.
+    /// Required to use chat on free tier.
+    OpenRouter {},
 }
 
 #[derive(Debug, Subcommand)]
