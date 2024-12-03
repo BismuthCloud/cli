@@ -327,6 +327,19 @@ async fn get_project_and_feature_for_repo(
 }
 
 async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Result<()> {
+    let gh_enabled = {
+        let resp = client
+            .get("/projects/connect/github/enabled")
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            resp.json::<serde_json::Value>().await?.as_bool().unwrap()
+        } else {
+            true
+        }
+    };
+
     let mut gh_repos = client
         .get("/projects/connect/github/repo")
         .send()
@@ -349,7 +362,7 @@ async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Resul
         let git_repo = git2::Repository::open(repo.as_path())?;
         if let Ok(remote) = git_repo.find_remote("origin") {
             let remote_url = remote.url().unwrap().to_string();
-            if remote_url.contains("github.com") {
+            if remote_url.contains("github.com") && gh_enabled {
                 // org/repo
                 // http will have github.com/... and ssh will have github.com:...
                 // and trim off any .git
@@ -476,6 +489,10 @@ async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Resul
         println!("You can now push to Bismuth with `git push bismuth` in this repository.");
         Ok(())
     } else {
+        if !gh_enabled {
+            return Err(anyhow!("GitHub integration is not enabled"));
+        }
+
         if gh_repos.is_empty() {
             println!("You'll need to install the GitHub App first.");
             press_any_key("Press any key to open the installation page.").await?;
