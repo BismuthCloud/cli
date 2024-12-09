@@ -214,7 +214,7 @@ pub struct ImportSource {
     /// The path to the Git repository to import. Defaults to the current directory.
     pub repo: Option<PathBuf>,
 
-    /// Import a repository from GitHub.
+    /// Import a repository from GitHub
     #[arg(long)]
     pub github: bool,
 }
@@ -227,7 +227,13 @@ pub enum ProjectCommand {
     Create { name: String },
     /// Create a new Bismuth project, and import an existing Git repository into it
     Import(ImportSource),
-    /// Link a project to a GitHub repository.
+    /// Add the bismuth git remote to an existing repository
+    AddRemote {
+        project: IdOrName,
+        /// The path to the Git repository to set the bismuth remote on
+        repo: Option<PathBuf>,
+    },
+    /// Link a project to a GitHub repository
     Link {
         /// The project to link
         project: IdOrName,

@@ -263,7 +263,7 @@ fn set_bismuth_remote(repo: &Path, project: &api::Project) -> Result<()> {
     git_url.set_username("git").unwrap();
     git_url.set_password(Some(&project.clone_token)).unwrap();
 
-    let git_repo = git2::Repository::open(repo)?;
+    let git_repo = git2::Repository::discover(repo)?;
     match git_repo.find_remote("bismuth") {
         Ok(_) => {
             debug!("Updating existing bismuth remote URL");
@@ -281,12 +281,9 @@ async fn get_project_and_feature_for_repo(
     client: &APIClient,
     repo: &Path,
 ) -> Result<(api::Project, api::Feature)> {
-    if !repo.join(".git").exists() {
-        return Err(anyhow!(
-            "Unable to determine project and feature (path is not a git repository)"
-        ));
-    }
-    let repo = git2::Repository::open(repo)?;
+    let repo = git2::Repository::discover(repo).map_err(|e| {
+        anyhow!("Unable to determine project and feature (path is not a git repository)")
+    })?;
     let remote_url = repo
         .find_remote("bismuth")
         .map_err(|e| {
@@ -355,11 +352,9 @@ async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Resul
             return Err(anyhow!("Repo does not exist"));
         }
         let repo = std::fs::canonicalize(repo)?;
-        if !repo.join(".git").exists() {
-            return Err(anyhow!("Directory is not a git repository"));
-        }
 
-        let git_repo = git2::Repository::open(repo.as_path())?;
+        let git_repo = git2::Repository::discover(repo.as_path())
+            .map_err(|e| anyhow!("Directory is not a git repository"))?;
         if let Ok(remote) = git_repo.find_remote("origin") {
             let remote_url = remote.url().unwrap().to_string();
             if remote_url.contains("github.com") && gh_enabled {
@@ -577,7 +572,7 @@ fn project_clone(project: &api::Project, outdir: Option<&Path>) -> Result<PathBu
 /// Returns true if the specified repository has changes in the checked out branch
 /// that have not been pushed to a Bismuth remote.
 fn check_not_pushed(repo: &Path, project: &api::Project, feature: &api::Feature) -> Result<bool> {
-    let repo = git2::Repository::open(repo)?;
+    let repo = git2::Repository::discover(repo)?;
     let origin_url = repo.find_remote("origin")?.url().unwrap().to_string();
     if origin_url.contains(&project.clone_token) {
         return Ok(false);
@@ -1074,6 +1069,12 @@ async fn _main() -> Result<()> {
                 Ok(())
             }
             cli::ProjectCommand::Import(source) => project_import(source, &client).await,
+            cli::ProjectCommand::AddRemote { project, repo } => {
+                let project = resolve_project_id(&client, project).await?;
+                let repo = std::fs::canonicalize(repo.clone().unwrap_or(std::env::current_dir()?))?;
+                set_bismuth_remote(&repo, &project)?;
+                Ok(())
+            }
             cli::ProjectCommand::Clone { project, outdir } => {
                 let project = resolve_project_id(&client, project).await?;
                 project_clone(&project, outdir.as_deref())?;
@@ -1588,7 +1589,7 @@ async fn _main() -> Result<()> {
                                 .map(|r| r.url().unwrap().to_string())
                                 .unwrap_or("".to_string());
                             if remote_url.contains(&project.clone_token) {
-                                std::env::current_dir().unwrap()
+                                repo.workdir().unwrap().to_path_buf()
                             } else {
                                 project_clone(&project, None)?
                             }
