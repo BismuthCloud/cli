@@ -61,7 +61,7 @@ impl FeatureRef {
     pub fn split(&self) -> (IdOrName, IdOrName) {
         let parts: Vec<&str> = self.feature.splitn(2, '/').collect();
         if parts.len() != 2 {
-            // tODO: nice error message
+            // TODO: nice error message
             panic!(
                 "Invalid feature reference (use `project/feature`): {}",
                 self.feature
@@ -120,16 +120,19 @@ pub enum Command {
         command: FeatureCommand,
     },
     /// Interact with key-value storage
+    #[clap(hide = true)]
     KV {
         #[clap(subcommand)]
         command: KVCommand,
     },
     /// Interact with blob (file) storage
+    #[clap(hide = true)]
     Blob {
         #[clap(subcommand)]
         command: BlobCommand,
     },
     /// Run SQL queries against a feature's database
+    #[clap(hide = true)]
     SQL {
         #[clap(subcommand)]
         command: SQLCommand,
@@ -228,12 +231,19 @@ pub enum ProjectCommand {
     /// Create a new Bismuth project, and import an existing Git repository into it
     Import(ImportSource),
     /// Add the bismuth git remote to an existing repository
+    #[clap(hide = true)]
     AddRemote {
         project: IdOrName,
         /// The path to the Git repository to set the bismuth remote on
         repo: Option<PathBuf>,
     },
+    Upload {
+        project: IdOrName,
+        /// The path to the Git repository to upload
+        repo: Option<PathBuf>,
+    },
     /// Link a project to a GitHub repository
+    #[clap(hide = true)]
     Link {
         /// The project to link
         project: IdOrName,

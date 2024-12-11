@@ -52,6 +52,50 @@ fn websocket_url(api_url: &Url) -> &'static str {
     }
 }
 
+fn recurse_list_dir(path: impl AsRef<Path>) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return vec![];
+    };
+    entries
+        .flatten()
+        .flat_map(|entry| {
+            let Ok(meta) = entry.metadata() else {
+                return vec![];
+            };
+            if meta.is_dir() {
+                return recurse_list_dir(entry.path());
+            }
+            if meta.is_file() {
+                return vec![entry.path()];
+            }
+            vec![]
+        })
+        .collect()
+}
+
+/// List all files in the repository, excluding those blocked by the config.
+fn list_all_files(repo_path: &Path) -> Result<Vec<String>> {
+    let config = bismuth_toml::parse_config(repo_path)?;
+    let globset = {
+        let mut builder = globset::GlobSetBuilder::new();
+        for glob in &config.chat.block_globs {
+            builder.add(glob.clone());
+        }
+        builder.build().unwrap()
+    };
+    Ok(recurse_list_dir(repo_path)
+        .into_iter()
+        .filter_map(|p| {
+            let p = p.strip_prefix(repo_path).unwrap().to_string_lossy();
+            if globset.is_match(p.as_ref()) {
+                None
+            } else {
+                Some(p.to_string())
+            }
+        })
+        .collect())
+}
+
 /// List files that have changed in the working directory compared to the upstream branch.
 fn list_changed_files(repo_path: &Path) -> Result<Vec<PathBuf>> {
     let repo = git2::Repository::open(repo_path)?;
@@ -1582,6 +1626,48 @@ impl App {
                         }
                     }
                 }
+                api::ws::Message::FileRPC(req) => {
+                    let resp = match req {
+                        api::ws::FileRPCRequest::List => {
+                            let files = list_all_files(repo_path).unwrap();
+                            api::ws::FileRPCResponse::List { files }
+                        }
+                        api::ws::FileRPCRequest::Read { path } => {
+                            let contents = std::fs::read_to_string(repo_path.join(&path)).ok();
+                            api::ws::FileRPCResponse::Read { contents }
+                        }
+                        api::ws::FileRPCRequest::Search { query } => {
+                            let results = list_all_files(repo_path)
+                                .unwrap()
+                                .into_iter()
+                                .flat_map(|file| {
+                                    if let Ok(contents) =
+                                        std::fs::read_to_string(repo_path.join(&file))
+                                    {
+                                        contents
+                                            .lines()
+                                            .enumerate()
+                                            .filter_map(|(line, text)| {
+                                                if text.contains(&query) {
+                                                    Some((file.clone(), line))
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                            .collect::<Vec<_>>()
+                                    } else {
+                                        vec![]
+                                    }
+                                })
+                                .collect();
+                            api::ws::FileRPCResponse::Search { results }
+                        }
+                    };
+                    let _ = write.send(Message::Text(
+                        serde_json::to_string(&api::ws::Message::FileRPCResponse(resp)).unwrap(),
+                    ));
+                }
+
                 api::ws::Message::Error(err) => {
                     return Err(anyhow!(err));
                 }
@@ -2122,19 +2208,23 @@ impl App {
                 .push(MessageBlock::Thinking("Planning".to_string()));
             scrollback.push(ai_msg);
 
-            let modified_files = list_changed_files(&self.repo_path)?
-                .into_iter()
-                .map(|path| {
-                    let content = std::fs::read_to_string(self.repo_path.join(&path))
-                        .unwrap_or("".to_string());
-                    api::ws::ChatModifiedFile {
-                        name: path.file_name().unwrap().to_str().unwrap().to_string(),
-                        project_path: path.to_str().unwrap().to_string(),
-                        content,
-                        deleted: Some(!self.repo_path.join(&path).exists()),
-                    }
-                })
-                .collect();
+            let modified_files = if self.project.has_pushed {
+                list_changed_files(&self.repo_path)?
+                    .into_iter()
+                    .map(|path| {
+                        let content = std::fs::read_to_string(self.repo_path.join(&path))
+                            .unwrap_or("".to_string());
+                        api::ws::ChatModifiedFile {
+                            name: path.file_name().unwrap().to_str().unwrap().to_string(),
+                            project_path: path.to_str().unwrap().to_string(),
+                            content,
+                            deleted: Some(!self.repo_path.join(&path).exists()),
+                        }
+                    })
+                    .collect()
+            } else {
+                vec![]
+            };
 
             write
                 .send(Message::Text(serde_json::to_string(
@@ -2164,15 +2254,16 @@ pub async fn start_chat(
 ) -> Result<()> {
     let repo_path = repo_path.to_path_buf();
 
-    if list_changed_files(&repo_path)?
-        .into_iter()
-        .map(|path| {
-            std::fs::metadata(&repo_path.join(&path))
-                .map(|s| s.len())
-                .unwrap_or(0)
-        })
-        .sum::<u64>()
-        > 8 * 1024 * 1024
+    if project.has_pushed
+        && list_changed_files(&repo_path)?
+            .into_iter()
+            .map(|path| {
+                std::fs::metadata(&repo_path.join(&path))
+                    .map(|s| s.len())
+                    .unwrap_or(0)
+            })
+            .sum::<u64>()
+            > 8 * 1024 * 1024
     {
         return Err(anyhow!(
             "There are too many unpushed changes. Please commit, `git push bismuth`, and try again."

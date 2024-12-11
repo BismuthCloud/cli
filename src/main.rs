@@ -281,7 +281,7 @@ async fn get_project_and_feature_for_repo(
     client: &APIClient,
     repo: &Path,
 ) -> Result<(api::Project, api::Feature)> {
-    let repo = git2::Repository::discover(repo).map_err(|e| {
+    let repo = git2::Repository::discover(repo).map_err(|_| {
         anyhow!("Unable to determine project and feature (path is not a git repository)")
     })?;
     let remote_url = repo
@@ -313,6 +313,19 @@ async fn get_project_and_feature_for_repo(
                     return Ok((project.clone(), feature.clone()));
                 }
             }
+            if !project.has_pushed {
+                let new_feature: api::Feature = client
+                    .post(&format!("/projects/{}/features", project.id))
+                    .json(&json!({ "name": branch_name }))
+                    .send()
+                    .await?
+                    .error_body_for_status()
+                    .await?
+                    .json()
+                    .await?;
+                return Ok((project.clone(), new_feature));
+            }
+            // TODO: this repo has been pushed before, do we just want to implicitly do it again?
             return Err(anyhow!(
                 "Unable to determine feature (current branch is not pushed?)"
             ));
@@ -454,24 +467,32 @@ async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Resul
         }
         set_bismuth_remote(&repo, &project)?;
 
-        Command::new("git")
-            .arg("-C")
-            .arg(repo.as_path())
-            .arg("push")
-            .arg("--force")
-            .arg("bismuth")
-            .arg("--all")
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .output()
-            .map_err(|e| anyhow!(e))
-            .and_then(|o| {
-                if o.status.success() {
-                    Ok(())
-                } else {
-                    Err(anyhow!("Failed to push to Bismuth"))
-                }
-            })?;
+        if confirm(
+            "Would you like to upload your code to Bismuth Cloud for analysis?\nThis will improve the accuracy and intelligence of Bismuth.",
+            true,
+        )
+        .await?
+        {
+            Command::new("git")
+                .arg("-C")
+                .arg(repo.as_path())
+                .arg("push")
+                .arg("--force")
+                .arg("bismuth")
+                .arg("--tags")
+                .arg("refs/remotes/origin/*:refs/heads/*")
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .output()
+                .map_err(|e| anyhow!(e))
+                .and_then(|o| {
+                    if o.status.success() {
+                        Ok(())
+                    } else {
+                        Err(anyhow!("Failed to push to Bismuth"))
+                    }
+                })?;
+        }
         println!(
             "{}",
             format!(
@@ -481,7 +502,6 @@ async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Resul
             )
             .green()
         );
-        println!("You can now push to Bismuth with `git push bismuth` in this repository.");
         Ok(())
     } else {
         if !gh_enabled {
@@ -1073,6 +1093,30 @@ async fn _main() -> Result<()> {
                 let project = resolve_project_id(&client, project).await?;
                 let repo = std::fs::canonicalize(repo.clone().unwrap_or(std::env::current_dir()?))?;
                 set_bismuth_remote(&repo, &project)?;
+                Ok(())
+            }
+            cli::ProjectCommand::Upload { project, repo } => {
+                let project = resolve_project_id(&client, project).await?;
+                let repo = std::fs::canonicalize(repo.clone().unwrap_or(std::env::current_dir()?))?;
+                Command::new("git")
+                    .arg("-C")
+                    .arg(repo.as_path())
+                    .arg("push")
+                    .arg("--force")
+                    .arg("bismuth")
+                    .arg("--tags")
+                    .arg("refs/remotes/origin/*:refs/heads/*")
+                    .stdout(std::process::Stdio::inherit())
+                    .stderr(std::process::Stdio::inherit())
+                    .output()
+                    .map_err(|e| anyhow!(e))
+                    .and_then(|o| {
+                        if o.status.success() {
+                            Ok(())
+                        } else {
+                            Err(anyhow!("Failed to push to Bismuth"))
+                        }
+                    })?;
                 Ok(())
             }
             cli::ProjectCommand::Clone { project, outdir } => {

@@ -39,6 +39,7 @@ pub struct Project {
     pub clone_token: String,
     pub github_repo: Option<String>,
     pub github_app_install: Option<GitHubAppInstall>,
+    pub has_pushed: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -245,6 +246,22 @@ pub mod ws {
 
     #[derive(Debug, Deserialize)]
     #[serde(tag = "action", rename_all = "SCREAMING_SNAKE_CASE")]
+    pub enum FileRPCRequest {
+        List,
+        Read { path: String },
+        Search { query: String },
+    }
+
+    #[derive(Debug, Serialize)]
+    #[serde(tag = "action", rename_all = "SCREAMING_SNAKE_CASE")]
+    pub enum FileRPCResponse {
+        List { files: Vec<String> },
+        Read { contents: Option<String> },
+        Search { results: Vec<(String, usize)> },
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "action", rename_all = "SCREAMING_SNAKE_CASE")]
     pub enum ACIMessage {
         Start {
             files: Vec<String>,
@@ -297,6 +314,8 @@ pub mod ws {
         RunCommand(RunCommandMessage),
         RunCommandResponse(RunCommandResponse),
         ACI(ACIMessage),
+        FileRPC(FileRPCRequest),
+        FileRPCResponse(FileRPCResponse),
         KillGeneration,
         Error(String),
     }
@@ -333,6 +352,12 @@ pub mod ws {
                 Message::KillGeneration => {
                     let mut state = serializer.serialize_struct("Message", 1)?;
                     state.serialize_field("type", "KILL_GENERATION")?;
+                    state.end()
+                }
+                Message::FileRPCResponse(ref response) => {
+                    let mut state = serializer.serialize_struct("Message", 3)?;
+                    state.serialize_field("type", "FILE_RPC_RESPONSE")?;
+                    state.serialize_field("file_rpc_response", response)?;
                     state.end()
                 }
                 // ResponseState is one-way, no need to serialize
@@ -390,6 +415,16 @@ pub mod ws {
                     )
                     .map_err(serde::de::Error::custom)?;
                     Ok(Message::ACI(aci))
+                }
+                Some("FILE_RPC") => {
+                    let req = serde_json::from_value(
+                        value
+                            .get("file_rpc")
+                            .ok_or(serde::de::Error::custom("missing inner file_rpc"))?
+                            .clone(),
+                    )
+                    .map_err(serde::de::Error::custom)?;
+                    Ok(Message::FileRPC(req))
                 }
                 None if value.get("error").is_some() => {
                     // Handle generic {"error": "asdf"} messages that come if the backend raises an error
