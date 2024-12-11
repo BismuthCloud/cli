@@ -256,7 +256,7 @@ pub mod ws {
     #[serde(tag = "action", rename_all = "SCREAMING_SNAKE_CASE")]
     pub enum FileRPCResponse {
         List { files: Vec<String> },
-        Read { contents: Option<String> },
+        Read { content: Option<String> },
         Search { results: Vec<(String, usize)> },
     }
 

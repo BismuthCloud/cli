@@ -1633,8 +1633,8 @@ impl App {
                             api::ws::FileRPCResponse::List { files }
                         }
                         api::ws::FileRPCRequest::Read { path } => {
-                            let contents = std::fs::read_to_string(repo_path.join(&path)).ok();
-                            api::ws::FileRPCResponse::Read { contents }
+                            let content = std::fs::read_to_string(repo_path.join(&path)).ok();
+                            api::ws::FileRPCResponse::Read { content }
                         }
                         api::ws::FileRPCRequest::Search { query } => {
                             let results = list_all_files(repo_path)
@@ -1663,9 +1663,13 @@ impl App {
                             api::ws::FileRPCResponse::Search { results }
                         }
                     };
-                    let _ = write.send(Message::Text(
-                        serde_json::to_string(&api::ws::Message::FileRPCResponse(resp)).unwrap(),
-                    ));
+                    write
+                        .send(Message::Text(
+                            serde_json::to_string(&api::ws::Message::FileRPCResponse(resp))
+                                .unwrap(),
+                        ))
+                        .await
+                        .unwrap();
                 }
 
                 api::ws::Message::Error(err) => {
