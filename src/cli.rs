@@ -199,6 +199,7 @@ pub enum Command {
 #[derive(Debug, Subcommand)]
 pub enum ConfigureCommand {
     #[clap(name = "openrouter")]
+    #[clap(hide = true)]
     /// OAuth via OpenRouter.
     /// Required to use chat on free tier.
     OpenRouter {},

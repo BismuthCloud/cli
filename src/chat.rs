@@ -52,27 +52,6 @@ fn websocket_url(api_url: &Url) -> &'static str {
     }
 }
 
-fn recurse_list_dir(path: impl AsRef<Path>) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(path) else {
-        return vec![];
-    };
-    entries
-        .flatten()
-        .flat_map(|entry| {
-            let Ok(meta) = entry.metadata() else {
-                return vec![];
-            };
-            if meta.is_dir() {
-                return recurse_list_dir(entry.path());
-            }
-            if meta.is_file() {
-                return vec![entry.path()];
-            }
-            vec![]
-        })
-        .collect()
-}
-
 /// List all files in the repository, excluding those blocked by the config.
 fn list_all_files(repo_path: &Path) -> Result<Vec<String>> {
     let config = bismuth_toml::parse_config(repo_path)?;
@@ -83,17 +62,36 @@ fn list_all_files(repo_path: &Path) -> Result<Vec<String>> {
         }
         builder.build().unwrap()
     };
-    Ok(recurse_list_dir(repo_path)
-        .into_iter()
-        .filter_map(|p| {
-            let p = p.strip_prefix(repo_path).unwrap().to_string_lossy();
-            if globset.is_match(p.as_ref()) {
-                None
+    let mut files: Vec<String> = Command::new("git")
+        .arg("-C")
+        .arg(&repo_path)
+        .arg("ls-tree")
+        .arg("-r")
+        .arg("HEAD")
+        .arg("--name-only")
+        .output()
+        .map_err(|e| anyhow!("Failed to run git ls-tree: {}", e))
+        .and_then(|o| {
+            if o.status.success() {
+                Ok(o.stdout)
             } else {
-                Some(p.to_string())
+                Err(anyhow!("git ls-tree failed (code={})", o.status))
             }
         })
-        .collect())
+        .and_then(|s| String::from_utf8(s).map_err(|e| anyhow!(e)))?
+        .lines()
+        .filter(|p| !globset.is_match(p))
+        .map(String::from)
+        .collect();
+    files.extend(
+        config
+            .chat
+            .additional_files
+            .iter()
+            .filter(|p| repo_path.join(p).is_file())
+            .map(String::from),
+    );
+    Ok(files)
 }
 
 /// List files that have changed in the working directory compared to the upstream branch.
@@ -1649,7 +1647,7 @@ impl App {
                                             .enumerate()
                                             .filter_map(|(line, text)| {
                                                 if text.contains(&query) {
-                                                    Some((file.clone(), line))
+                                                    Some((file.clone(), line + 1))
                                                 } else {
                                                     None
                                                 }
