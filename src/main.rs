@@ -367,7 +367,7 @@ async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Resul
         let repo = std::fs::canonicalize(repo)?;
 
         let git_repo = git2::Repository::discover(repo.as_path())
-            .map_err(|e| anyhow!("Directory is not a git repository"))?;
+            .map_err(|_| anyhow!("Directory is not a git repository"))?;
         if let Ok(remote) = git_repo.find_remote("origin") {
             let remote_url = remote.url().unwrap().to_string();
             if remote_url.contains("github.com") && gh_enabled {
