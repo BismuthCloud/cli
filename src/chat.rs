@@ -1647,7 +1647,7 @@ impl App {
                                             .enumerate()
                                             .filter_map(|(line, text)| {
                                                 if text.contains(&query) {
-                                                    Some((file.clone(), line + 1))
+                                                    Some((file.clone(), line + 1, text.to_string()))
                                                 } else {
                                                     None
                                                 }

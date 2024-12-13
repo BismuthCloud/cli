@@ -255,9 +255,16 @@ pub mod ws {
     #[derive(Debug, Serialize)]
     #[serde(tag = "action", rename_all = "SCREAMING_SNAKE_CASE")]
     pub enum FileRPCResponse {
-        List { files: Vec<String> },
-        Read { content: Option<String> },
-        Search { results: Vec<(String, usize)> },
+        List {
+            files: Vec<String>,
+        },
+        Read {
+            content: Option<String>,
+        },
+        Search {
+            // (filename, line number, line content)
+            results: Vec<(String, usize, String)>,
+        },
     }
 
     #[derive(Debug, Deserialize)]
