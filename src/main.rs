@@ -479,8 +479,8 @@ async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Resul
                 .arg("push")
                 .arg("--force")
                 .arg("bismuth")
-                .arg("--tags")
-                .arg("refs/remotes/origin/*:refs/heads/*")
+                .arg("refs/remotes/origin/*")
+                .arg("refs/heads/*")
                 .stdout(std::process::Stdio::inherit())
                 .stderr(std::process::Stdio::inherit())
                 .output()
@@ -1098,14 +1098,15 @@ async fn _main() -> Result<()> {
             cli::ProjectCommand::Upload { project, repo } => {
                 let project = resolve_project_id(&client, project).await?;
                 let repo = std::fs::canonicalize(repo.clone().unwrap_or(std::env::current_dir()?))?;
+                set_bismuth_remote(&repo, &project)?;
                 Command::new("git")
                     .arg("-C")
                     .arg(repo.as_path())
                     .arg("push")
                     .arg("--force")
                     .arg("bismuth")
-                    .arg("--tags")
-                    .arg("refs/remotes/origin/*:refs/heads/*")
+                    .arg("refs/remotes/origin/*")
+                    .arg("refs/heads/*")
                     .stdout(std::process::Stdio::inherit())
                     .stderr(std::process::Stdio::inherit())
                     .output()
