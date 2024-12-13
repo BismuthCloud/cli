@@ -62,7 +62,7 @@ fn list_all_files(repo_path: &Path) -> Result<Vec<String>> {
         }
         builder.build().unwrap()
     };
-    let mut files: Vec<String> = Command::new("git")
+    let mut files: HashSet<String> = Command::new("git")
         .arg("-C")
         .arg(&repo_path)
         .arg("ls-tree")
@@ -80,8 +80,71 @@ fn list_all_files(repo_path: &Path) -> Result<Vec<String>> {
         })
         .and_then(|s| String::from_utf8(s).map_err(|e| anyhow!(e)))?
         .lines()
-        .filter(|p| !globset.is_match(p))
         .map(String::from)
+        .collect();
+
+    let repo = git2::Repository::open(repo_path)?;
+    let statuses = repo.statuses(None)?;
+    for status in statuses.iter() {
+        match status.status() {
+            git2::Status::WT_NEW
+            | git2::Status::WT_MODIFIED
+            | git2::Status::WT_DELETED
+            | git2::Status::INDEX_NEW
+            | git2::Status::INDEX_MODIFIED
+            | git2::Status::INDEX_DELETED => {
+                files.insert(status.path().unwrap().to_string());
+            }
+            git2::Status::WT_RENAMED | git2::Status::INDEX_RENAMED => {
+                if let Some(stuff) = status.head_to_index() {
+                    files.insert(
+                        stuff
+                            .old_file()
+                            .path()
+                            .unwrap()
+                            .to_str()
+                            .unwrap()
+                            .to_string(),
+                    );
+                    files.insert(
+                        stuff
+                            .new_file()
+                            .path()
+                            .unwrap()
+                            .to_str()
+                            .unwrap()
+                            .to_string(),
+                    );
+                }
+                if let Some(stuff) = status.index_to_workdir() {
+                    files.insert(
+                        stuff
+                            .old_file()
+                            .path()
+                            .unwrap()
+                            .to_str()
+                            .unwrap()
+                            .to_string(),
+                    );
+                    files.insert(
+                        stuff
+                            .new_file()
+                            .path()
+                            .unwrap()
+                            .to_str()
+                            .unwrap()
+                            .to_string(),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    files = files
+        .into_iter()
+        .filter(|p| repo_path.join(p).is_file())
+        .filter(|p| !globset.is_match(p))
         .collect();
     files.extend(
         config
@@ -91,7 +154,7 @@ fn list_all_files(repo_path: &Path) -> Result<Vec<String>> {
             .filter(|p| repo_path.join(p).is_file())
             .map(String::from),
     );
-    Ok(files)
+    Ok(files.into_iter().collect())
 }
 
 /// List files that have changed in the working directory compared to the upstream branch.
