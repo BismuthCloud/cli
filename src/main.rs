@@ -481,7 +481,6 @@ async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Resul
                 .arg("bismuth")
                 .arg("--tags")
                 .arg("refs/remotes/origin/*:refs/heads/*")
-                .arg("--no-verify")
                 .stdout(std::process::Stdio::inherit())
                 .stderr(std::process::Stdio::inherit())
                 .output()
@@ -647,7 +646,6 @@ async fn feature_deploy(
                 .arg("push")
                 .arg("--force")
                 .arg("bismuth")
-                .arg("--no-verify")
                 .stdout(std::process::Stdio::inherit())
                 .stderr(std::process::Stdio::inherit())
                 .output()
@@ -1100,7 +1098,6 @@ async fn _main() -> Result<()> {
             cli::ProjectCommand::Upload { project, repo } => {
                 let project = resolve_project_id(&client, project).await?;
                 let repo = std::fs::canonicalize(repo.clone().unwrap_or(std::env::current_dir()?))?;
-                set_bismuth_remote(&repo, &project)?;
                 Command::new("git")
                     .arg("-C")
                     .arg(repo.as_path())
@@ -1109,7 +1106,6 @@ async fn _main() -> Result<()> {
                     .arg("bismuth")
                     .arg("--tags")
                     .arg("refs/remotes/origin/*:refs/heads/*")
-                    .arg("--no-verify")
                     .stdout(std::process::Stdio::inherit())
                     .stderr(std::process::Stdio::inherit())
                     .output()
