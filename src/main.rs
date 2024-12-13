@@ -468,7 +468,7 @@ async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Resul
         set_bismuth_remote(&repo, &project)?;
 
         if confirm(
-            "Would you like to upload your code to Bismuth Cloud for analysis?\nThis will improve the accuracy and intelligence of Bismuth.",
+            "Would you like to upload your code to Bismuth Cloud for analysis?\nThis will improve the accuracy and intelligence of Bismuth on your code (but will not be used for training).",
             true,
         )
         .await?
