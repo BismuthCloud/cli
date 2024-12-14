@@ -1958,133 +1958,147 @@ impl App {
                     },
                     _ => {}
                 },
-                AppState::Chat => match event::read()? {
-                    Event::Mouse(mouse) => match mouse.kind {
-                        event::MouseEventKind::ScrollUp => {
-                            self.chat_history.scroll_position =
-                                self.chat_history.scroll_position.saturating_sub(1);
-                        }
-                        event::MouseEventKind::ScrollDown => {
-                            self.chat_history.scroll_position = self
-                                .chat_history
-                                .scroll_position
-                                .saturating_add(1)
-                                .clamp(0, self.chat_history.scroll_max);
-                        }
-                        event::MouseEventKind::Up(MouseButton::Left) => {
-                            let mut messages = self.chat_history.messages.lock().unwrap();
-
-                            if let Ok(mut clipboard_ctx) = copypasta::ClipboardContext::new() {
-                                for ((start, _end), block) in self
-                                    .chat_history
-                                    .message_hitboxes
-                                    .iter()
-                                    .zip(messages.iter())
-                                {
-                                    // -1 for the border of chat history
-                                    if (*start as isize
-                                        - self.chat_history.scroll_position as isize)
-                                        == (mouse.row as isize) - 1
-                                        && (mouse.column as usize == 1
-                                            || mouse.column as usize == 2)
-                                    {
-                                        clipboard_ctx.set_contents(block.raw.clone()).unwrap();
-                                    }
-                                }
+                AppState::Chat => {
+                    let last_generation_done = self
+                        .chat_history
+                        .messages
+                        .lock()
+                        .unwrap()
+                        .last()
+                        .map_or(true, |msg| msg.finalized);
+                    if !last_generation_done {
+                        if let Event::Key(key) = event::read()? {
+                            if key.kind == event::KeyEventKind::Press
+                                && key.modifiers.contains(event::KeyModifiers::CONTROL)
+                                && key.code == KeyCode::Char('c')
+                            {
+                                write
+                                    .send(Message::Text(serde_json::to_string(
+                                        &api::ws::Message::KillGeneration,
+                                    )?))
+                                    .await?;
                             }
+                        }
+                    } else {
+                        match event::read()? {
+                            Event::Mouse(mouse) => match mouse.kind {
+                                event::MouseEventKind::ScrollUp => {
+                                    self.chat_history.scroll_position =
+                                        self.chat_history.scroll_position.saturating_sub(1);
+                                }
+                                event::MouseEventKind::ScrollDown => {
+                                    self.chat_history.scroll_position = self
+                                        .chat_history
+                                        .scroll_position
+                                        .saturating_add(1)
+                                        .clamp(0, self.chat_history.scroll_max);
+                                }
+                                event::MouseEventKind::Up(MouseButton::Left) => {
+                                    let mut messages = self.chat_history.messages.lock().unwrap();
 
-                            let mut hitboxes_iter = self.chat_history.code_block_hitboxes.iter();
-                            for msg in messages.iter_mut() {
-                                for block in &mut msg.blocks {
-                                    if let MessageBlock::Code(code) = block {
-                                        let (start, end) = hitboxes_iter.next().unwrap();
-                                        // -1 for the border of chat history
-                                        if (*start as isize
-                                            - self.chat_history.scroll_position as isize)
-                                            < (mouse.row as isize)
-                                            && (*end as isize
-                                                - self.chat_history.scroll_position as isize)
-                                                > (mouse.row as isize) - 1
+                                    if let Ok(mut clipboard_ctx) =
+                                        copypasta::ClipboardContext::new()
+                                    {
+                                        for ((start, _end), block) in self
+                                            .chat_history
+                                            .message_hitboxes
+                                            .iter()
+                                            .zip(messages.iter())
                                         {
-                                            code.folded = !code.folded;
-                                            msg.block_line_cache.1.clear();
+                                            // -1 for the border of chat history
+                                            if (*start as isize
+                                                - self.chat_history.scroll_position as isize)
+                                                == (mouse.row as isize) - 1
+                                                && (mouse.column as usize == 1
+                                                    || mouse.column as usize == 2)
+                                            {
+                                                clipboard_ctx
+                                                    .set_contents(block.raw.clone())
+                                                    .unwrap();
+                                            }
+                                        }
+                                    }
+
+                                    let mut hitboxes_iter =
+                                        self.chat_history.code_block_hitboxes.iter();
+                                    for msg in messages.iter_mut() {
+                                        for block in &mut msg.blocks {
+                                            if let MessageBlock::Code(code) = block {
+                                                let (start, end) = hitboxes_iter.next().unwrap();
+                                                // -1 for the border of chat history
+                                                if (*start as isize
+                                                    - self.chat_history.scroll_position as isize)
+                                                    < (mouse.row as isize)
+                                                    && (*end as isize
+                                                        - self.chat_history.scroll_position
+                                                            as isize)
+                                                        > (mouse.row as isize) - 1
+                                                {
+                                                    code.folded = !code.folded;
+                                                    msg.block_line_cache.1.clear();
+                                                }
+                                            }
                                         }
                                     }
                                 }
-                            }
-                        }
-                        _ => {}
-                    },
-                    Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
-                        KeyCode::Char('d')
-                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-                        {
-                            let mut state = self.state.lock().unwrap();
-                            *state = AppState::Exit;
-                        }
-                        KeyCode::Esc => {
-                            let mut state = self.state.lock().unwrap();
-                            *state = AppState::Exit;
-                        }
-                        KeyCode::Char('n')
-                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-                        {
-                            let session = self
-                                .client
-                                .post(&format!(
-                                    "/projects/{}/features/{}/chat/sessions",
-                                    self.project.id, self.feature.id
-                                ))
-                                .json(&json!({ "name": None::<&str> }))
-                                .send()
-                                .await?
-                                .error_body_for_status()
-                                .await?
-                                .json()
-                                .await?;
-                            let mut state = self.state.lock().unwrap();
+                                _ => {}
+                            },
+                            Event::Key(key) if key.kind == event::KeyEventKind::Press => {
+                                match key.code {
+                                    KeyCode::Char('d')
+                                        if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                                    {
+                                        let mut state = self.state.lock().unwrap();
+                                        *state = AppState::Exit;
+                                    }
+                                    KeyCode::Esc => {
+                                        let mut state = self.state.lock().unwrap();
+                                        *state = AppState::Exit;
+                                    }
+                                    KeyCode::Char('n')
+                                        if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                                    {
+                                        let session = self
+                                            .client
+                                            .post(&format!(
+                                                "/projects/{}/features/{}/chat/sessions",
+                                                self.project.id, self.feature.id
+                                            ))
+                                            .json(&json!({ "name": None::<&str> }))
+                                            .send()
+                                            .await?
+                                            .error_body_for_status()
+                                            .await?
+                                            .json()
+                                            .await?;
+                                        let mut state = self.state.lock().unwrap();
 
-                            *state = AppState::ChangeSession(session);
-                        }
-                        KeyCode::Char('c')
-                            if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-                        {
-                            write
-                                .send(Message::Text(serde_json::to_string(
-                                    &api::ws::Message::KillGeneration,
-                                )?))
-                                .await?;
-                        }
-                        KeyCode::Enter => {
-                            // ALT+enter for manual newlines
-                            if key.modifiers.contains(event::KeyModifiers::ALT)
-                                || key.modifiers.contains(event::KeyModifiers::SHIFT)
-                            {
-                                self.input.input(key);
-                            } else {
-                                let last_generation_done = self
-                                    .chat_history
-                                    .messages
-                                    .lock()
-                                    .unwrap()
-                                    .last()
-                                    .map_or(true, |msg| msg.finalized);
-                                if last_generation_done {
-                                    self.handle_chat_input(&write).await?;
-                                    self.chat_history.scroll_position =
-                                        self.chat_history.scroll_max;
+                                        *state = AppState::ChangeSession(session);
+                                    }
+                                    KeyCode::Enter => {
+                                        // ALT+enter for manual newlines
+                                        if key.modifiers.contains(event::KeyModifiers::ALT)
+                                            || key.modifiers.contains(event::KeyModifiers::SHIFT)
+                                        {
+                                            self.input.input(key);
+                                        } else {
+                                            self.handle_chat_input(&write).await?;
+                                            self.chat_history.scroll_position =
+                                                self.chat_history.scroll_max;
+                                        }
+                                    }
+                                    _ => {
+                                        self.input.input(key);
+                                    }
                                 }
                             }
+                            Event::Paste(paste) => {
+                                self.input.insert_str(paste);
+                            }
+                            _ => (),
                         }
-                        _ => {
-                            self.input.input(key);
-                        }
-                    },
-                    Event::Paste(paste) => {
-                        self.input.insert_str(paste);
                     }
-                    _ => (),
-                },
+                }
                 AppState::ACI(_) => match event::read()? {
                     Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
                         KeyCode::Char('c')
