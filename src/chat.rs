@@ -280,6 +280,8 @@ fn command_modified_files(repo_path: &Path) -> Result<Vec<ChatModifiedFile>> {
         .collect())
 }
 
+const BISMUTH_AUTHOR: &str = "bismuthdev[bot]";
+
 fn process_chat_message(
     repo_path: &Path,
     modified_files: &[ChatModifiedFile],
@@ -303,10 +305,8 @@ fn process_chat_message(
         let tree_id = index.write_tree()?;
         let tree = repo.find_tree(tree_id)?;
 
-        let signature = git2::Signature::now(
-            "bismuthdev[bot]",
-            "bismuthdev[bot]@users.noreply.github.com",
-        )?;
+        let signature =
+            git2::Signature::now(BISMUTH_AUTHOR, "bismuthdev[bot]@users.noreply.github.com")?;
         repo.commit(
             Some("HEAD"),
             &signature,
@@ -1019,6 +1019,7 @@ struct DiffReviewWidget {
     lines: Vec<OwnedLine>,
     commit_message: Option<String>,
     msg_id: u64,
+    can_apply: bool,
     v_scroll_position: usize,
     v_scroll_max: usize,
     v_scroll_state: ratatui::widgets::ScrollbarState,
@@ -1047,6 +1048,7 @@ impl DiffReviewWidget {
                 .collect::<Vec<_>>(),
             commit_message,
             msg_id,
+            can_apply: true,
             v_scroll_position: 0,
             v_scroll_max: diff.lines().count(),
             v_scroll_state: ratatui::widgets::ScrollbarState::default(),
@@ -1074,7 +1076,11 @@ impl Widget for &mut DiffReviewWidget {
         )
         .block(Block::bordered().title(vec![
             " Review Diff ".into(),
-            Span::styled("(y to commit, n to revert) ", ratatui::style::Color::Yellow),
+            if self.can_apply {
+                Span::styled("(y to commit, n to revert) ", ratatui::style::Color::Yellow)
+            } else {
+                Span::styled("(press Esc to close) ", ratatui::style::Color::Yellow)
+            },
         ]))
         .scroll((self.v_scroll_position as u16, self.h_scroll_position as u16));
 
@@ -1809,7 +1815,7 @@ impl App {
                 }
                 AppState::ReviewDiff(diff) => match event::read()? {
                     Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
-                        KeyCode::Char('y') => {
+                        KeyCode::Char('y') if diff.can_apply => {
                             commit(&self.repo_path, diff.commit_message.as_deref())?;
                             let client = self.client.clone();
                             let project = self.project.id;
@@ -1831,7 +1837,7 @@ impl App {
                             let mut state = self.state.lock().unwrap();
                             *state = AppState::Chat;
                         }
-                        KeyCode::Char('n') | KeyCode::Esc => {
+                        KeyCode::Char('n') | KeyCode::Esc if diff.can_apply => {
                             revert(&self.repo_path)?;
                             let client = self.client.clone();
                             let project = self.project.id;
@@ -1850,6 +1856,10 @@ impl App {
                                     .send()
                                     .await;
                             });
+                            let mut state = self.state.lock().unwrap();
+                            *state = AppState::Chat;
+                        }
+                        KeyCode::Esc if !diff.can_apply => {
                             let mut state = self.state.lock().unwrap();
                             *state = AppState::Chat;
                         }
@@ -2154,9 +2164,10 @@ impl App {
                             r#"/exit, /quit, or Esc: Exit the chat
 /docs: Open the Bismuth documentation
 /new-session [NAME]: Start a new session
-/session [NAME]: Switch to a different session
 /rename-session <NAME>: Rename the current session
+/session [NAME]: Switch to a different session
 /feedback <DESCRIPTION>: Send us feedback
+/diff: Review the last diff Bismuth made
 /help: Show this help"#
                                 .to_string(),
                         );
@@ -2265,13 +2276,41 @@ impl App {
                     // eh idk if we want this, seems like a good way to lose things even with the name check
                     "/undo" => {
                         let repo = git2::Repository::open(&self.repo_path)?;
-                        let last = repo.revparse_single("HEAD~1")?;
-                        if last.peel_to_commit()?.author().name().unwrap() == "Bismuth" {
+                        let last = repo.revparse_single("HEAD")?;
+                        if last.peel_to_commit()?.author().name().unwrap() == BISMUTH_AUTHOR {
                             repo.reset(
                                 &repo.revparse_single("HEAD~1")?,
                                 git2::ResetType::Hard,
                                 Some(git2::build::CheckoutBuilder::new().force()),
                             )?;
+                        }
+                    }
+                    "/diff" => {
+                        let repo = git2::Repository::open(&self.repo_path)?;
+                        let last = repo.revparse_single("HEAD")?;
+                        if last.peel_to_commit()?.author().name().unwrap() == BISMUTH_AUTHOR {
+                            let mut widget = DiffReviewWidget::new(
+                                Command::new("git")
+                                    .arg("-C")
+                                    .arg(&self.repo_path)
+                                    .arg("--no-pager")
+                                    .arg("diff")
+                                    .arg("HEAD~1..HEAD")
+                                    .output()
+                                    .map_err(|e| anyhow!("Failed to run git diff: {}", e))
+                                    .and_then(|o| {
+                                        if o.status.success() {
+                                            Ok(o.stdout)
+                                        } else {
+                                            Err(anyhow!("git diff failed (code={})", o.status))
+                                        }
+                                    })
+                                    .and_then(|s| String::from_utf8(s).map_err(|e| anyhow!(e)))?,
+                                0,
+                                None,
+                            );
+                            widget.can_apply = false;
+                            *state = AppState::ReviewDiff(widget);
                         }
                     }
                     _ => {
