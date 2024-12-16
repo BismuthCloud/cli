@@ -473,7 +473,7 @@ async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Resul
         )
         .await?
         {
-            Command::new("git")
+            if !Command::new("git")
                 .arg("-C")
                 .arg(repo.as_path())
                 .arg("push")
@@ -484,14 +484,28 @@ async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Resul
                 .stdout(std::process::Stdio::inherit())
                 .stderr(std::process::Stdio::inherit())
                 .output()
-                .map_err(|e| anyhow!(e))
-                .and_then(|o| {
-                    if o.status.success() {
-                        Ok(())
+                .map_err(|e| anyhow!(e))?.status.success() {
+                    if confirm("Failed to push to Bismuth. Would you like to continue without pushing?", true).await? {
+                        println!(
+                            "{}",
+                            format!(
+                                "🎉 Successfully created project {}",
+                                project.name
+                            )
+                            .green()
+                        );
+                        return Ok(());
                     } else {
-                        Err(anyhow!("Failed to push to Bismuth"))
+                        println!("Cleaning up project...");
+                        client
+                            .delete(&format!("/projects/{}", project.id))
+                            .send()
+                            .await?
+                            .error_body_for_status()
+                            .await?;
+                        return Err(anyhow!("Failed to push! Hint: you may need to temporarily disable git pre-push hooks."));
                     }
-                })?;
+                }
         }
         println!(
             "{}",
