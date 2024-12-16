@@ -1048,7 +1048,7 @@ impl DiffReviewWidget {
             commit_message,
             msg_id,
             v_scroll_position: 0,
-            v_scroll_max: 0,
+            v_scroll_max: diff.lines().count(),
             v_scroll_state: ratatui::widgets::ScrollbarState::default(),
             h_scroll_position: 0,
             h_scroll_max: diff.lines().map(|l| l.len()).max().unwrap_or(0),
@@ -1059,6 +1059,13 @@ impl DiffReviewWidget {
 
 impl Widget for &mut DiffReviewWidget {
     fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
+        self.v_scroll_position = self
+            .v_scroll_position
+            .min(self.v_scroll_max.saturating_sub(area.height as usize));
+        self.h_scroll_position = self
+            .h_scroll_position
+            .min(self.h_scroll_max.saturating_sub(area.width as usize));
+
         let paragraph = Paragraph::new(
             self.lines
                 .iter()
@@ -1071,11 +1078,10 @@ impl Widget for &mut DiffReviewWidget {
         ]))
         .scroll((self.v_scroll_position as u16, self.h_scroll_position as u16));
 
-        self.v_scroll_max = self.lines.len().saturating_sub(area.height as usize);
         self.v_scroll_state = self
             .v_scroll_state
             .position(self.v_scroll_position)
-            .content_length(self.v_scroll_max);
+            .content_length(self.v_scroll_max.saturating_sub(area.height as usize));
 
         self.h_scroll_state = self
             .h_scroll_state
