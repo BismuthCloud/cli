@@ -1529,15 +1529,49 @@ async fn _main() -> Result<()> {
         },
         cli::Command::Billing { command } => match command {
             cli::BillingCommand::ManageSubscription => {
+                let org = client
+                    .get("")
+                    .send()
+                    .await?
+                    .error_body_for_status()
+                    .await?
+                    .json::<api::Organization>()
+                    .await?;
+                let url = if org.subscription.r#type == api::SubscriptionType::Individual {
+                    println!("Opening subscription upgrade page");
+                    client
+                        .get("/billing/upgrade")
+                        .query(&[("tier", "PROFESSIONAL")])
+                        .send()
+                        .await?
+                        .error_body_for_status()
+                        .await?
+                        .text()
+                        .await?
+                } else {
+                    println!("Opening subscription management page");
+                    client
+                        .get("/billing/manage")
+                        .send()
+                        .await?
+                        .error_body_for_status()
+                        .await?
+                        .text()
+                        .await?
+                };
+                open::that_detached(url)?;
+                Ok(())
+            }
+            cli::BillingCommand::Refill => {
                 let url = client
-                    .get("/billing/manage")
+                    .get("/billing/credits/buy")
                     .send()
                     .await?
                     .error_body_for_status()
                     .await?
                     .text()
                     .await?;
-                println!("Opening Stripe subscription management page");
+                println!("Opening checkout page");
                 open::that_detached(url)?;
                 Ok(())
             }

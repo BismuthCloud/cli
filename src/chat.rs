@@ -18,7 +18,7 @@ use ratatui::{
         event::{self, Event, KeyCode, MouseButton},
     },
     layout::{Constraint, Layout, Margin, Rect},
-    style::{Style, Stylize},
+    style::Style,
     text::{Line, Span},
     widgets::{
         Block, Borders, Clear, Padding, Paragraph, Scrollbar, ScrollbarState, StatefulWidget, Tabs,
@@ -2168,6 +2168,7 @@ impl App {
 /session [NAME]: Switch to a different session
 /feedback <DESCRIPTION>: Send us feedback
 /diff: Review the last diff Bismuth made
+/refill: Open billing page to refill credits
 /help: Show this help"#
                                 .to_string(),
                         );
@@ -2312,6 +2313,18 @@ impl App {
                             widget.can_apply = false;
                             *state = AppState::ReviewDiff(widget);
                         }
+                    }
+                    "/refill" => {
+                        let url = self
+                            .client
+                            .get("/billing/credits/buy")
+                            .send()
+                            .await?
+                            .error_body_for_status()
+                            .await?
+                            .text()
+                            .await?;
+                        open::that_detached(url)?;
                     }
                     _ => {
                         *state = AppState::Popup(

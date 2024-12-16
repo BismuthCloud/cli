@@ -2,19 +2,26 @@ use std::fmt::Display;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SubscriptionType {
-    Free,
     Individual,
+    Professional,
     Team,
     Ent,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct Subscription {
+    pub id: u64,
+    pub r#type: SubscriptionType,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Organization {
     pub id: u64,
     pub name: String,
+    pub subscription: Subscription,
 }
 
 impl Display for Organization {

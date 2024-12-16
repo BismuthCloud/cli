@@ -387,4 +387,6 @@ pub enum SQLCommand {
 pub enum BillingCommand {
     /// Open Stripe subscription management page
     ManageSubscription,
+    /// Open credit purchase page
+    Refill,
 }
