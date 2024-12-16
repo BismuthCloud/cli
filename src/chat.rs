@@ -1016,7 +1016,7 @@ impl Widget for &mut ChatHistoryWidget {
 
 #[derive(Clone, Debug)]
 struct DiffReviewWidget {
-    diff: String,
+    lines: Vec<OwnedLine>,
     commit_message: Option<String>,
     msg_id: u64,
     v_scroll_position: usize,
@@ -1030,14 +1030,28 @@ struct DiffReviewWidget {
 impl DiffReviewWidget {
     fn new(diff: String, msg_id: u64, commit_message: Option<String>) -> Self {
         Self {
-            diff,
+            lines: diff
+                .lines()
+                .map(|line| {
+                    OwnedLine::from(vec![(
+                        line,
+                        if line.starts_with('+') && !line.starts_with("+++") {
+                            Style::default().fg(ratatui::style::Color::Green)
+                        } else if line.starts_with('-') && !line.starts_with("---") {
+                            Style::default().fg(ratatui::style::Color::Red)
+                        } else {
+                            Style::default()
+                        },
+                    )])
+                })
+                .collect::<Vec<_>>(),
             commit_message,
             msg_id,
             v_scroll_position: 0,
             v_scroll_max: 0,
             v_scroll_state: ratatui::widgets::ScrollbarState::default(),
             h_scroll_position: 0,
-            h_scroll_max: 0,
+            h_scroll_max: diff.lines().map(|l| l.len()).max().unwrap_or(0),
             h_scroll_state: ratatui::widgets::ScrollbarState::default(),
         }
     }
@@ -1045,46 +1059,30 @@ impl DiffReviewWidget {
 
 impl Widget for &mut DiffReviewWidget {
     fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
-        let lines = self
-            .diff
-            .lines()
-            .map(|line| {
-                let mut ui_line = Line::raw(line.replace("\t", "    "));
-                if line.starts_with('+') && !line.starts_with("+++") {
-                    ui_line = ui_line.green();
-                } else if line.starts_with('-') && !line.starts_with("---") {
-                    ui_line = ui_line.red();
-                }
-                ui_line
-            })
-            .collect::<Vec<_>>();
-        let paragraph = Paragraph::new(lines)
-            .block(Block::bordered().title(vec![
-                " Review Diff ".into(),
-                Span::styled("(y to commit, n to revert) ", ratatui::style::Color::Yellow),
-            ]))
-            .scroll((self.v_scroll_position as u16, self.h_scroll_position as u16));
+        let paragraph = Paragraph::new(
+            self.lines
+                .iter()
+                .map(OwnedLine::as_line)
+                .collect::<Vec<_>>(),
+        )
+        .block(Block::bordered().title(vec![
+            " Review Diff ".into(),
+            Span::styled("(y to commit, n to revert) ", ratatui::style::Color::Yellow),
+        ]))
+        .scroll((self.v_scroll_position as u16, self.h_scroll_position as u16));
 
-        let nlines = self.diff.lines().count();
-        self.v_scroll_max = nlines.saturating_sub(area.height as usize);
+        self.v_scroll_max = self.lines.len().saturating_sub(area.height as usize);
         self.v_scroll_state = self
             .v_scroll_state
             .position(self.v_scroll_position)
             .content_length(self.v_scroll_max);
 
-        self.h_scroll_max = self
-            .diff
-            .lines()
-            .map(|l| l.len())
-            .max()
-            .unwrap_or(0)
-            .saturating_sub(area.width as usize);
         self.h_scroll_state = self
             .h_scroll_state
             .position(self.h_scroll_position)
-            .content_length(self.h_scroll_max);
+            .content_length(self.h_scroll_max.saturating_sub(area.width as usize));
 
-        let area = centered_paragraph(&paragraph, area);
+        let area = centered(self.h_scroll_max, self.lines.len(), area);
         Clear.render(area, buf);
         paragraph.render(area, buf);
         StatefulWidget::render(
@@ -1849,15 +1847,6 @@ impl App {
                             let mut state = self.state.lock().unwrap();
                             *state = AppState::Chat;
                         }
-                        KeyCode::Char(' ') => {
-                            let mut state = self.state.lock().unwrap();
-                            if let AppState::ReviewDiff(diff_widget) = &mut *state {
-                                diff_widget.v_scroll_position = diff_widget
-                                    .v_scroll_position
-                                    .saturating_add(10)
-                                    .clamp(0, diff_widget.v_scroll_max);
-                            }
-                        }
                         KeyCode::Down => {
                             let mut state = self.state.lock().unwrap();
                             if let AppState::ReviewDiff(diff_widget) = &mut *state {
@@ -1867,12 +1856,30 @@ impl App {
                                     .clamp(0, diff_widget.v_scroll_max);
                             }
                         }
+                        KeyCode::PageDown => {
+                            let mut state = self.state.lock().unwrap();
+                            if let AppState::ReviewDiff(diff_widget) = &mut *state {
+                                diff_widget.v_scroll_position = diff_widget
+                                    .v_scroll_position
+                                    .saturating_sub(10)
+                                    .clamp(0, diff_widget.v_scroll_max);
+                            }
+                        }
                         KeyCode::Up => {
                             let mut state = self.state.lock().unwrap();
                             if let AppState::ReviewDiff(diff_widget) = &mut *state {
                                 diff_widget.v_scroll_position = diff_widget
                                     .v_scroll_position
                                     .saturating_sub(1)
+                                    .clamp(0, diff_widget.v_scroll_max);
+                            }
+                        }
+                        KeyCode::Char(' ') | KeyCode::PageUp => {
+                            let mut state = self.state.lock().unwrap();
+                            if let AppState::ReviewDiff(diff_widget) = &mut *state {
+                                diff_widget.v_scroll_position = diff_widget
+                                    .v_scroll_position
+                                    .saturating_add(10)
                                     .clamp(0, diff_widget.v_scroll_max);
                             }
                         }
@@ -2464,10 +2471,10 @@ fn ui(
     }
 }
 
-fn centered_paragraph(paragraph: &Paragraph, r: Rect) -> Rect {
+fn centered(width: usize, height: usize, r: Rect) -> Rect {
     // +2 for border
-    let width = (paragraph.line_width() + 2).min(r.width as usize) as u16;
-    let height = (paragraph.line_count(width) + 2).min(r.height as usize) as u16;
+    let width = (width + 2).min(r.width as usize) as u16;
+    let height = (height + 2).min(r.height as usize) as u16;
 
     let popup_layout = Layout::vertical([
         Constraint::Fill(1),
@@ -2482,6 +2489,11 @@ fn centered_paragraph(paragraph: &Paragraph, r: Rect) -> Rect {
         Constraint::Fill(1),
     ])
     .split(popup_layout[1])[1]
+}
+
+fn centered_paragraph(paragraph: &Paragraph, r: Rect) -> Rect {
+    let width = paragraph.line_width();
+    centered(width, paragraph.line_count(width as u16), r)
 }
 
 mod terminal {
