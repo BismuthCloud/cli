@@ -336,7 +336,7 @@ async fn get_project_and_feature_for_repo(
     ))
 }
 
-async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Result<()> {
+async fn project_import(args: &cli::ImportArgs, client: &APIClient) -> Result<()> {
     let gh_enabled = {
         let resp = client
             .get("/projects/connect/github/enabled")
@@ -359,8 +359,8 @@ async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Resul
         .json::<Vec<api::GitHubRepo>>()
         .await?;
 
-    if !source.github {
-        let repo = source.repo.clone().unwrap_or(PathBuf::from("."));
+    if !args.source.github {
+        let repo = args.source.repo.clone().unwrap_or(PathBuf::from("."));
         if !repo.exists() {
             return Err(anyhow!("Repo does not exist"));
         }
@@ -467,7 +467,7 @@ async fn project_import(source: &cli::ImportSource, client: &APIClient) -> Resul
         }
         set_bismuth_remote(&repo, &project)?;
 
-        if confirm(
+        if args.upload || confirm(
             "Would you like to upload your code to Bismuth Cloud for analysis?\nThis will improve the accuracy and intelligence of Bismuth on your code (but will not be used for training).",
             true,
         )
@@ -1102,7 +1102,7 @@ async fn _main() -> Result<()> {
                 project_clone(&project, None)?;
                 Ok(())
             }
-            cli::ProjectCommand::Import(source) => project_import(source, &client).await,
+            cli::ProjectCommand::Import(args) => project_import(args, &client).await,
             cli::ProjectCommand::AddRemote { project, repo } => {
                 let project = resolve_project_id(&client, project).await?;
                 let repo = std::fs::canonicalize(repo.clone().unwrap_or(std::env::current_dir()?))?;
@@ -1591,7 +1591,7 @@ async fn _main() -> Result<()> {
             }
         },
         // Convenience aliases
-        cli::Command::Import(source) => project_import(source, &client).await,
+        cli::Command::Import(args) => project_import(args, &client).await,
         cli::Command::Deploy {
             feature,
             no_wait,

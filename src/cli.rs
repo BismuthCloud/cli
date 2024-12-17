@@ -143,7 +143,7 @@ pub enum Command {
     },
     /// Create a new Bismuth project, and import an existing Git repository into it.
     /// Alias of `project import`.
-    Import(ImportSource),
+    Import(ImportArgs),
     /// Deploy a feature to the cloud. Alias of `feature deploy`.
     #[clap(hide = true)]
     Deploy {
@@ -216,11 +216,22 @@ pub enum ChatSubcommand {
 #[group(required = true, multiple = false)]
 pub struct ImportSource {
     /// The path to the Git repository to import. Defaults to the current directory.
+    #[arg(group = "source")]
     pub repo: Option<PathBuf>,
 
     /// Import a repository from GitHub
-    #[arg(long)]
+    #[arg(long, group = "source")]
     pub github: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ImportArgs {
+    #[clap(flatten)]
+    pub source: ImportSource,
+
+    /// Implicitly upload to Bismuth Cloud
+    #[arg(long)]
+    pub upload: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -230,7 +241,7 @@ pub enum ProjectCommand {
     /// Create a new project
     Create { name: String },
     /// Create a new Bismuth project, and import an existing Git repository into it
-    Import(ImportSource),
+    Import(ImportArgs),
     /// Add the bismuth git remote to an existing repository
     #[clap(hide = true)]
     AddRemote {

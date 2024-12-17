@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SubscriptionType {
+    Free, // deprecated
     Individual,
     Professional,
     Team,
@@ -36,6 +37,10 @@ pub struct Feature {
     pub name: String,
 }
 
+fn default_true() -> bool {
+    return true;
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
@@ -46,6 +51,7 @@ pub struct Project {
     pub clone_token: String,
     pub github_repo: Option<String>,
     pub github_app_install: Option<GitHubAppInstall>,
+    #[serde(default = "default_true")]
     pub has_pushed: bool,
 }
 
