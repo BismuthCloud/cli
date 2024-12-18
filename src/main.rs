@@ -337,137 +337,47 @@ async fn get_project_and_feature_for_repo(
 }
 
 async fn project_import(args: &cli::ImportArgs, client: &APIClient) -> Result<()> {
-    let gh_enabled = {
-        let resp = client
-            .get("/projects/connect/github/enabled")
-            .send()
-            .await?;
+    let repo = args.source.repo.clone().unwrap_or(PathBuf::from("."));
+    if !repo.exists() {
+        return Err(anyhow!("Repo does not exist"));
+    }
+    let repo = std::fs::canonicalize(repo)?;
 
-        if resp.status().is_success() {
-            resp.json::<serde_json::Value>().await?.as_bool().unwrap()
-        } else {
-            true
-        }
-    };
+    let git_repo = git2::Repository::discover(repo.as_path())
+        .map_err(|_| anyhow!("Directory is not a git repository"))?;
 
-    let mut gh_repos = client
-        .get("/projects/connect/github/repo")
+    let project: api::Project = client
+        .post("/projects")
+        .json(&api::CreateProjectRequest::Name(api::CreateProjectRepo {
+            name: repo.file_name().unwrap().to_string_lossy().to_string(),
+        }))
         .send()
         .await?
         .error_body_for_status()
         .await?
-        .json::<Vec<api::GitHubRepo>>()
+        .json()
         .await?;
 
-    if !args.source.github {
-        let repo = args.source.repo.clone().unwrap_or(PathBuf::from("."));
-        if !repo.exists() {
-            return Err(anyhow!("Repo does not exist"));
-        }
-        let repo = std::fs::canonicalize(repo)?;
+    if git_repo.head().is_err() {
+        let mut index = git_repo.index()?;
+        let tree_id = index.write_tree()?;
+        let tree = git_repo.find_tree(tree_id)?;
+        let signature = git2::Signature::now(
+            "bismuthdev[bot]",
+            "bismuthdev[bot]@users.noreply.github.com",
+        )?;
+        git_repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "Initial commit",
+            &tree,
+            &[],
+        )?;
+    }
+    set_bismuth_remote(&repo, &project)?;
 
-        let git_repo = git2::Repository::discover(repo.as_path())
-            .map_err(|_| anyhow!("Directory is not a git repository"))?;
-        if let Ok(remote) = git_repo.find_remote("origin") {
-            let remote_url = remote.url().unwrap().to_string();
-            if remote_url.contains("github.com") && gh_enabled {
-                // org/repo
-                // http will have github.com/... and ssh will have github.com:...
-                // and trim off any .git
-                let gh_repo_name =
-                    remote_url.split("github.com").last().unwrap()[1..].trim_end_matches(".git");
-
-                println!("This repository is from GitHub.");
-                println!(
-                    "If you own this repository, it's recommended to use the Bismuth GitHub App to link it."
-                );
-                if confirm("Would you like to do this?", true).await? {
-                    if gh_repos.is_empty()
-                        || !gh_repos
-                            .iter()
-                            .any(|r| r.repo.to_lowercase() == gh_repo_name)
-                    {
-                        let orig_gh_repos = gh_repos.clone();
-                        press_any_key("Press any key to open the installation page.").await?;
-                        open::that_detached(github_app_url(&client.base_url))?;
-                        print!("Waiting for app install");
-                        std::io::stdout().flush()?;
-                        loop {
-                            tokio::time::sleep(Duration::from_secs(2)).await;
-                            print!(".");
-                            std::io::stdout().flush()?;
-                            gh_repos = client
-                                .get("/projects/connect/github/repo")
-                                .send()
-                                .await?
-                                .error_body_for_status()
-                                .await?
-                                .json::<Vec<api::GitHubRepo>>()
-                                .await?;
-                            if gh_repos != orig_gh_repos {
-                                break;
-                            }
-                        }
-                        println!();
-                    }
-                    let mut gh_repo = gh_repos
-                        .iter()
-                        .find(|r| r.repo.to_lowercase() == gh_repo_name);
-                    if gh_repo.is_none() {
-                        println!("I can't find this repository in the list of repositories the GitHub App has access to.");
-                        gh_repo = Some(choice(&gh_repos, "repository").await?);
-                    }
-                    let project: api::Project = client
-                        .post("/projects")
-                        .json(&api::CreateProjectRequest::Repo(gh_repo.unwrap().clone()))
-                        .send()
-                        .await?
-                        .error_body_for_status()
-                        .await?
-                        .json()
-                        .await?;
-                    set_bismuth_remote(&repo, &project)?;
-                    println!(
-                        "{}",
-                        format!("🎉 Successfully imported {}", gh_repo.unwrap().repo).green()
-                    );
-                    return Ok(());
-                }
-            }
-        }
-
-        let project: api::Project = client
-            .post("/projects")
-            .json(&api::CreateProjectRequest::Name(api::CreateProjectRepo {
-                name: repo.file_name().unwrap().to_string_lossy().to_string(),
-            }))
-            .send()
-            .await?
-            .error_body_for_status()
-            .await?
-            .json()
-            .await?;
-
-        if git_repo.head().is_err() {
-            let mut index = git_repo.index()?;
-            let tree_id = index.write_tree()?;
-            let tree = git_repo.find_tree(tree_id)?;
-            let signature = git2::Signature::now(
-                "bismuthdev[bot]",
-                "bismuthdev[bot]@users.noreply.github.com",
-            )?;
-            git_repo.commit(
-                Some("HEAD"),
-                &signature,
-                &signature,
-                "Initial commit",
-                &tree,
-                &[],
-            )?;
-        }
-        set_bismuth_remote(&repo, &project)?;
-
-        if args.upload || confirm(
+    if args.upload || confirm(
             "Would you like to upload your code to Bismuth Cloud for analysis?\nThis will improve the accuracy and intelligence of Bismuth on your code (but will not be used for training).",
             true,
         )
@@ -507,54 +417,16 @@ async fn project_import(args: &cli::ImportArgs, client: &APIClient) -> Result<()
                     }
                 }
         }
-        println!(
-            "{}",
-            format!(
-                "🎉 Successfully imported {} to project {}",
-                repo.as_path().display(),
-                project.name
-            )
-            .green()
-        );
-        Ok(())
-    } else {
-        if !gh_enabled {
-            return Err(anyhow!("GitHub integration is not enabled"));
-        }
-
-        if gh_repos.is_empty() {
-            println!("You'll need to install the GitHub App first.");
-            press_any_key("Press any key to open the installation page.").await?;
-            open::that_detached(github_app_url(&client.base_url))?;
-            print!("Waiting for app install");
-            std::io::stdout().flush()?;
-            loop {
-                tokio::time::sleep(Duration::from_secs(2)).await;
-                print!(".");
-                std::io::stdout().flush()?;
-                gh_repos = client
-                    .get("/projects/connect/github/repo")
-                    .send()
-                    .await?
-                    .error_body_for_status()
-                    .await?
-                    .json::<Vec<api::GitHubRepo>>()
-                    .await?;
-                if !gh_repos.is_empty() {
-                    break;
-                }
-            }
-        }
-        let repo = choice(&gh_repos, "repository").await?;
-        client
-            .post("/projects")
-            .json(&api::CreateProjectRequest::Repo(repo.clone()))
-            .send()
-            .await?
-            .error_body_for_status()
-            .await?;
-        Ok(())
-    }
+    println!(
+        "{}",
+        format!(
+            "🎉 Successfully imported {} to project {}",
+            repo.as_path().display(),
+            project.name
+        )
+        .green()
+    );
+    Ok(())
 }
 
 fn project_clone(project: &api::Project, outdir: Option<&Path>) -> Result<PathBuf> {
