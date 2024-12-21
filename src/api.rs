@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SubscriptionType {
     Free, // deprecated
@@ -12,13 +12,13 @@ pub enum SubscriptionType {
     Ent,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Subscription {
     pub id: u64,
     pub r#type: SubscriptionType,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Organization {
     pub id: u64,
     pub name: String,
@@ -104,6 +104,7 @@ pub struct User {
     pub email: String,
     pub username: String,
     pub name: String,
+    pub organizations: Vec<Organization>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

@@ -852,10 +852,16 @@ async fn _main() -> Result<()> {
         let token = oidc_server(&args.global.api_url).await?;
 
         let client = APIClient::new(&args.global.api_url, &token)?;
-        let organizations: Vec<api::Organization> =
-            client.get("/organizations").send().await?.json().await?;
+        let user = client
+            .get("/auth/me")
+            .send()
+            .await?
+            .error_body_for_status()
+            .await?
+            .json::<api::User>()
+            .await?;
 
-        let organization = choice(&organizations, "organization").await?;
+        let organization = choice(&user.organizations, "organization").await?;
 
         let config = Config {
             token: token.to_string(),
