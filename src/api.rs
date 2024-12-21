@@ -169,6 +169,14 @@ pub struct LLMConfigurationRequest {
     pub key: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreditUsage {
+    pub plan_included: i32,
+    pub plan_used: i32,
+    pub purchased_remaining: i32,
+}
+
 pub mod ws {
     use serde::{ser::SerializeStruct, Deserialize, Serialize};
 

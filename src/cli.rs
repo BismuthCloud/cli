@@ -393,6 +393,8 @@ pub enum SQLCommand {
 pub enum BillingCommand {
     /// Open Stripe subscription management page
     ManageSubscription,
+    /// Get number of credits remaining
+    CreditsRemaining,
     /// Open credit purchase page
     Refill,
 }

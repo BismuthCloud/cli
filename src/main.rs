@@ -807,8 +807,8 @@ async fn check_version() -> Result<()> {
             .as_slice()
         {
             if latest_maj > this_maj || latest_min > this_min || latest_patch > this_patch {
-                println!("{}", "A newer version of the CLI is available!".yellow());
-                println!(
+                eprintln!("{}", "A newer version of the CLI is available!".yellow());
+                eprintln!(
                     "{}",
                     "Get it at https://github.com/BismuthCloud/cli/releases".yellow()
                 );
@@ -1448,6 +1448,21 @@ async fn _main() -> Result<()> {
                         .await?
                 };
                 open::that_detached(url)?;
+                Ok(())
+            }
+            cli::BillingCommand::CreditsRemaining => {
+                let credits: api::CreditUsage = client
+                    .get("/billing/credits/usage")
+                    .send()
+                    .await?
+                    .error_body_for_status()
+                    .await?
+                    .json()
+                    .await?;
+                println!(
+                    "{}",
+                    credits.plan_included - credits.plan_used + credits.purchased_remaining
+                );
                 Ok(())
             }
             cli::BillingCommand::Refill => {
