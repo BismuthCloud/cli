@@ -1872,7 +1872,7 @@ impl App {
                                     .clamp(0, diff_widget.v_scroll_max);
                             }
                         }
-                        KeyCode::PageDown => {
+                        KeyCode::PageUp => {
                             let mut state = self.state.lock().unwrap();
                             if let AppState::ReviewDiff(diff_widget) = &mut *state {
                                 diff_widget.v_scroll_position = diff_widget
@@ -1890,7 +1890,7 @@ impl App {
                                     .clamp(0, diff_widget.v_scroll_max);
                             }
                         }
-                        KeyCode::Char(' ') | KeyCode::PageUp => {
+                        KeyCode::Char(' ') | KeyCode::PageDown => {
                             let mut state = self.state.lock().unwrap();
                             if let AppState::ReviewDiff(diff_widget) = &mut *state {
                                 diff_widget.v_scroll_position = diff_widget
