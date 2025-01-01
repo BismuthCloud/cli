@@ -216,7 +216,12 @@ pub enum ChatSubcommand {
 #[group(required = true, multiple = false)]
 pub struct ImportSource {
     /// The path to the Git repository to import. Defaults to the current directory.
+    #[arg(group = "source")]
     pub repo: Option<PathBuf>,
+
+    /// Import a repository from GitHub
+    #[arg(long, group = "source")]
+    pub github: bool,
 }
 
 #[derive(Debug, Args)]
