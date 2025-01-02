@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use clap::Parser as _;
 use colored::Colorize;
 use futures::{StreamExt as _, TryStreamExt};
-use log::debug;
+use log::{debug, trace};
 use once_cell::sync::OnceCell;
 use reqwest_eventsource::EventSource;
 use serde::{Deserialize, Serialize};
@@ -53,18 +53,22 @@ impl APIClient {
         })
     }
     fn get(&self, path: &str) -> reqwest::RequestBuilder {
+        debug!("GET {}", path);
         self.client
             .get(self.base_url.join(path.trim_start_matches('/')).unwrap())
     }
     fn post(&self, path: &str) -> reqwest::RequestBuilder {
+        debug!("POST {}", path);
         self.client
             .post(self.base_url.join(path.trim_start_matches('/')).unwrap())
     }
     fn put(&self, path: &str) -> reqwest::RequestBuilder {
+        debug!("PUT {}", path);
         self.client
             .put(self.base_url.join(path.trim_start_matches('/')).unwrap())
     }
     fn delete(&self, path: &str) -> reqwest::RequestBuilder {
+        debug!("DELETE {}", path);
         self.client
             .delete(self.base_url.join(path.trim_start_matches('/')).unwrap())
     }
@@ -337,27 +341,16 @@ async fn get_project_and_feature_for_repo(
 }
 
 async fn project_import(args: &cli::ImportArgs, client: &APIClient) -> Result<()> {
-    let gh_enabled = {
-        let resp = client
-            .get("/projects/connect/github/enabled")
-            .send()
-            .await?;
-
-        if resp.status().is_success() {
-            resp.json::<serde_json::Value>().await?.as_bool().unwrap()
-        } else {
-            true
-        }
-    };
-
-    let mut gh_repos = client
-        .get("/projects/connect/github/repo")
+    let gh_enabled = client
+        .get("/projects/connect/github/enabled")
         .send()
         .await?
         .error_body_for_status()
         .await?
-        .json::<Vec<api::GitHubRepo>>()
-        .await?;
+        .json::<serde_json::Value>()
+        .await?
+        .as_bool()
+        .unwrap();
 
     if !args.source.github {
         let repo = args.source.repo.clone().unwrap_or(PathBuf::from("."));
@@ -368,73 +361,6 @@ async fn project_import(args: &cli::ImportArgs, client: &APIClient) -> Result<()
 
         let git_repo = git2::Repository::discover(repo.as_path())
             .map_err(|_| anyhow!("Directory is not a git repository"))?;
-        if let Ok(remote) = git_repo.find_remote("origin") {
-            let remote_url = remote.url().unwrap().to_string();
-            if remote_url.contains("github.com") && gh_enabled {
-                // org/repo
-                // http will have github.com/... and ssh will have github.com:...
-                // and trim off any .git
-                let gh_repo_name =
-                    remote_url.split("github.com").last().unwrap()[1..].trim_end_matches(".git");
-
-                println!("This repository is from GitHub.");
-                println!(
-                    "If you own this repository, it's recommended to use the Bismuth GitHub App to link it."
-                );
-                if confirm("Would you like to do this?", true).await? {
-                    if gh_repos.is_empty()
-                        || !gh_repos
-                            .iter()
-                            .any(|r| r.repo.to_lowercase() == gh_repo_name)
-                    {
-                        let orig_gh_repos = gh_repos.clone();
-                        press_any_key("Press any key to open the installation page.").await?;
-                        open::that_detached(github_app_url(&client.base_url))?;
-                        print!("Waiting for app install");
-                        std::io::stdout().flush()?;
-                        loop {
-                            tokio::time::sleep(Duration::from_secs(2)).await;
-                            print!(".");
-                            std::io::stdout().flush()?;
-                            gh_repos = client
-                                .get("/projects/connect/github/repo")
-                                .send()
-                                .await?
-                                .error_body_for_status()
-                                .await?
-                                .json::<Vec<api::GitHubRepo>>()
-                                .await?;
-                            if gh_repos != orig_gh_repos {
-                                break;
-                            }
-                        }
-                        println!();
-                    }
-                    let mut gh_repo = gh_repos
-                        .iter()
-                        .find(|r| r.repo.to_lowercase() == gh_repo_name);
-                    if gh_repo.is_none() {
-                        println!("I can't find this repository in the list of repositories the GitHub App has access to.");
-                        gh_repo = Some(choice(&gh_repos, "repository").await?);
-                    }
-                    let project: api::Project = client
-                        .post("/projects")
-                        .json(&api::CreateProjectRequest::Repo(gh_repo.unwrap().clone()))
-                        .send()
-                        .await?
-                        .error_body_for_status()
-                        .await?
-                        .json()
-                        .await?;
-                    set_bismuth_remote(&repo, &project)?;
-                    println!(
-                        "{}",
-                        format!("🎉 Successfully imported {}", gh_repo.unwrap().repo).green()
-                    );
-                    return Ok(());
-                }
-            }
-        }
 
         let project: api::Project = client
             .post("/projects")
@@ -522,6 +448,15 @@ async fn project_import(args: &cli::ImportArgs, client: &APIClient) -> Result<()
         if !gh_enabled {
             return Err(anyhow!("GitHub integration is not enabled"));
         }
+
+        let mut gh_repos = {
+            let resp = client.get("/projects/connect/github/repo").send().await?;
+            if resp.status().is_success() {
+                resp.json::<Vec<api::GitHubRepo>>().await?
+            } else {
+                vec![]
+            }
+        };
 
         if gh_repos.is_empty() {
             println!("You'll need to install the GitHub App first.");

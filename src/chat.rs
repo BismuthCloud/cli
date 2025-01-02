@@ -842,15 +842,19 @@ struct ChatHistoryWidget {
     message_hitboxes: Vec<(usize, usize)>,
     sessions: Vec<api::ChatSession>,
     session: api::ChatSession,
+    feature: api::Feature,
+    project: api::Project,
 }
 
 impl Widget for &mut ChatHistoryWidget {
     fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
         let block = Block::new()
             .title(format!(
-                " Chat History{} ",
+                " Chat History ({}/{}{}) ",
+                self.project.name,
+                self.feature.name,
                 match &self.session._name {
-                    Some(name) => format!(" ({})", name),
+                    Some(name) => format!("- {}", name),
                     None => "".to_string(),
                 }
             ))
@@ -1362,6 +1366,8 @@ impl App {
                 message_hitboxes: vec![],
                 sessions,
                 session: session.clone(),
+                feature: feature.clone(),
+                project: project.clone(),
             },
             input: tui_textarea::TextArea::default(),
             client: client.clone(),
@@ -2068,13 +2074,9 @@ impl App {
                             },
                             Event::Key(key) if key.kind == event::KeyEventKind::Press => {
                                 match key.code {
-                                    KeyCode::Char('d')
+                                    KeyCode::Char('c')
                                         if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
                                     {
-                                        let mut state = self.state.lock().unwrap();
-                                        *state = AppState::Exit;
-                                    }
-                                    KeyCode::Esc => {
                                         let mut state = self.state.lock().unwrap();
                                         *state = AppState::Exit;
                                     }
@@ -2161,7 +2163,7 @@ impl App {
                     "/help" => {
                         *state = AppState::Popup(
                             "Help".to_string(),
-                            r#"/exit, /quit, or Esc: Exit the chat
+                            r#"/exit, /quit, or Ctrl+C: Exit the chat
 /docs: Open the Bismuth documentation
 /new-session [NAME]: Start a new session
 /rename-session <NAME>: Rename the current session

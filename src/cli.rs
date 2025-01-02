@@ -220,7 +220,7 @@ pub struct ImportSource {
     pub repo: Option<PathBuf>,
 
     /// Import a repository from GitHub
-    #[arg(long, group = "source")]
+    #[arg(long, group = "source", hide = true)]
     pub github: bool,
 }
 
