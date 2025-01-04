@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use clap::Parser as _;
 use colored::Colorize;
 use futures::{StreamExt as _, TryStreamExt};
-use log::{debug, trace};
+use log::debug;
 use once_cell::sync::OnceCell;
 use reqwest_eventsource::EventSource;
 use serde::{Deserialize, Serialize};

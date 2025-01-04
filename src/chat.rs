@@ -21,8 +21,8 @@ use ratatui::{
     style::Style,
     text::{Line, Span},
     widgets::{
-        Block, Borders, Clear, Padding, Paragraph, Scrollbar, ScrollbarState, StatefulWidget, Tabs,
-        Widget,
+        block::Title, Block, Borders, Clear, Padding, Paragraph, Scrollbar, ScrollbarState,
+        StatefulWidget, Tabs, Widget,
     },
 };
 use serde_json::json;
@@ -844,20 +844,39 @@ struct ChatHistoryWidget {
     session: api::ChatSession,
     feature: api::Feature,
     project: api::Project,
+    credit_remaining: Arc<Mutex<u64>>,
 }
 
 impl Widget for &mut ChatHistoryWidget {
     fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
+        let credit_remaining = *self.credit_remaining.lock().unwrap();
         let block = Block::new()
-            .title(format!(
-                " Chat History ({}/{}{}) ",
-                self.project.name,
-                self.feature.name,
-                match &self.session._name {
-                    Some(name) => format!("- {}", name),
-                    None => "".to_string(),
-                }
-            ))
+            .title(
+                Title::from(format!(
+                    " Chat History ({}/{}{}) ",
+                    self.project.name,
+                    self.feature.name,
+                    match &self.session._name {
+                        Some(name) => format!("- {}", name),
+                        None => "".to_string(),
+                    }
+                ))
+                .alignment(ratatui::layout::Alignment::Left),
+            )
+            .title(
+                Title::from(vec![
+                    " Remaining Credits: ".into(),
+                    if credit_remaining > 0 {
+                        Span::raw(format!("{} ", credit_remaining))
+                    } else {
+                        Span::styled(
+                            "0 ",
+                            ratatui::style::Style::default().fg(ratatui::style::Color::Red),
+                        )
+                    },
+                ])
+                .alignment(ratatui::layout::Alignment::Right),
+            )
             .borders(ratatui::widgets::Borders::ALL);
 
         let mut line_idx = 0;
@@ -1011,9 +1030,33 @@ impl Widget for &mut ChatHistoryWidget {
             .collect::<Vec<_>>();
             lines.push(Line::raw("Use `/session` to change session"));
             let paragraph = Paragraph::new(lines);
-            let area = centered_paragraph(&paragraph, area.inner(Margin::new(0, 1)));
-            Clear.render(area, buf);
-            paragraph.render(area, buf);
+            let center_area = centered_paragraph(&paragraph, area.inner(Margin::new(0, 1)));
+            Clear.render(center_area, buf);
+            paragraph.render(center_area, buf);
+
+            let legend_text = vec![
+                "Ctrl+N: New session",
+                "Ctrl+C: Exit",
+                "/session: Switch session",
+                "/feedback: Send feedback",
+                "/help: Show full help",
+            ];
+            let legend_height = legend_text.len() as u16;
+            let legend_width = legend_text.iter().map(|s| s.len()).max().unwrap() as u16;
+            let legend_layout =
+                Layout::vertical([Constraint::Length(legend_height), Constraint::Fill(1)])
+                    .split(area.inner(Margin::new(2, 1)));
+            let legend_rect =
+                Layout::horizontal([Constraint::Fill(1), Constraint::Length(legend_width)])
+                    .split(legend_layout[0])[1];
+            let legend = Paragraph::new(
+                legend_text
+                    .into_iter()
+                    .map(|t| Line::styled(t, Style::default().fg(ratatui::style::Color::DarkGray)))
+                    .collect::<Vec<_>>(),
+            )
+            .alignment(ratatui::layout::Alignment::Right);
+            legend.render(legend_rect, buf);
         }
     }
 }
@@ -1174,20 +1217,17 @@ struct ACIVizWidget {
     status: String,
     test_output: Option<String>,
     run_cmd_output: Option<String>,
+    /// Credit usage
+    usage: u64,
 }
 
 impl Widget for &mut ACIVizWidget {
     fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
-        // Padding around the outside
-        let mut area = area;
-        area.width = area.width.saturating_sub(8);
-        area.height = area.height.saturating_sub(8);
-        area.x += 4;
-        area.y += 4;
-
+        let area = area.inner(Margin::new(4, 4));
         Clear.render(area, buf);
 
-        let block = Block::bordered().title(" Bismuth Agent ");
+        let block =
+            Block::bordered().title(format!(" Bismuth Agent ({} Credits Used) ", self.usage));
         let block_area = area;
         let area = block.inner(area);
         block.render(block_area, buf);
@@ -1195,7 +1235,7 @@ impl Widget for &mut ACIVizWidget {
         let vertical = ratatui::layout::Layout::vertical([
             ratatui::layout::Constraint::Length(1), // file tabs
             ratatui::layout::Constraint::Min(0),
-            ratatui::layout::Constraint::Length(2), // status bar + top border
+            ratatui::layout::Constraint::Length(2), // status bar + divider
         ]);
         let [tab_area, file_area, status_area] = vertical.areas(area);
 
@@ -1341,19 +1381,42 @@ struct App {
 }
 
 impl App {
-    fn new(
+    async fn new(
         repo_path: &Path,
         project: &api::Project,
         feature: &api::Feature,
         session: &api::ChatSession,
         current_user: &api::User,
         sessions: Vec<api::ChatSession>,
-        chat_history: &[ChatMessage],
         ws_stream: tokio_tungstenite::WebSocketStream<
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
         client: &APIClient,
-    ) -> Self {
+    ) -> Result<Self> {
+        let chat_history: Vec<ChatMessage> = client
+            .get(&format!(
+                "/projects/{}/features/{}/chat/sessions/{}/list",
+                project.id, feature.id, session.id
+            ))
+            .send()
+            .await?
+            .error_body_for_status()
+            .await?
+            .json::<Vec<api::ChatMessage>>()
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect();
+
+        let credits: api::CreditUsage = client
+            .get("/billing/credits/usage")
+            .send()
+            .await?
+            .error_body_for_status()
+            .await?
+            .json()
+            .await?;
+
         let mut x = Self {
             repo_path: repo_path.to_path_buf(),
             user: current_user.clone(),
@@ -1368,6 +1431,10 @@ impl App {
                 session: session.clone(),
                 feature: feature.clone(),
                 project: project.clone(),
+                credit_remaining: Arc::new(Mutex::new(
+                    (credits.plan_included - credits.plan_used + credits.purchased_remaining).max(0)
+                        as u64,
+                )),
             },
             input: tui_textarea::TextArea::default(),
             client: client.clone(),
@@ -1378,7 +1445,7 @@ impl App {
             state: Arc::new(Mutex::new(AppState::Chat)),
         };
         x.clear_input();
-        x
+        Ok(x)
     }
 
     fn clear_input(&mut self) {
@@ -1393,6 +1460,7 @@ impl App {
         read: &mut SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
         write: &mpsc::Sender<tokio_tungstenite::tungstenite::Message>,
         scrollback: Arc<Mutex<Vec<ChatMessage>>>,
+        credit_remaining: Arc<Mutex<u64>>,
         repo_path: &Path,
         state: Arc<Mutex<AppState>>,
     ) -> Result<()> {
@@ -1417,9 +1485,8 @@ impl App {
             let data: api::ws::Message = match serde_json::from_str(message_txt) {
                 Ok(data) => data,
                 Err(e) => {
-                    eprintln!("JSON Parse error: {}", e);
-                    eprintln!("Failed message: {}", &message_txt);
-                    panic!("JSON parse failed {e}");
+                    debug!("Message deserialization error: {}", e);
+                    continue;
                 }
             };
 
@@ -1454,6 +1521,7 @@ impl App {
                             output_modified_files,
                             commit_message,
                             id,
+                            credits_used,
                             ..
                         } => {
                             {
@@ -1461,6 +1529,10 @@ impl App {
                                 let last = scrollback.last_mut().unwrap();
                                 *last = ChatMessage::new(ChatMessageUser::AI, &generated_text);
                                 last.finalized = true;
+                            }
+                            if let Some(credits_used) = credits_used {
+                                let mut credit_remaining = credit_remaining.lock().unwrap();
+                                *credit_remaining -= credits_used;
                             }
 
                             revert(repo_path).unwrap();
@@ -1594,6 +1666,7 @@ impl App {
                             status: format!("Looking through {}", active_file),
                             test_output: None,
                             run_cmd_output: None,
+                            usage: 0,
                         });
                     } else {
                         let mut state = state.lock().unwrap();
@@ -1748,9 +1821,14 @@ impl App {
                         .await
                         .unwrap();
                 }
-
                 api::ws::Message::Error(err) => {
                     return Err(anyhow!(err));
+                }
+                api::ws::Message::Usage(usage) => {
+                    let mut state = state.lock().unwrap();
+                    if let AppState::ACI(ref mut widget) = &mut *state {
+                        widget.usage = usage;
+                    }
                 }
                 _ => {}
             }
@@ -1775,12 +1853,20 @@ impl App {
         });
 
         let scrollback = self.chat_history.messages.clone();
+        let credits_remaining = self.chat_history.credit_remaining.clone();
         let repo_path = self.repo_path.clone();
         let state = self.state.clone();
         let write_ = write.clone();
         tokio::spawn(async move {
-            let res =
-                Self::read_loop(&mut read, &write_, scrollback.clone(), &repo_path, state).await;
+            let res = Self::read_loop(
+                &mut read,
+                &write_,
+                scrollback.clone(),
+                credits_remaining,
+                &repo_path,
+                state,
+            )
+            .await;
             let _ = dead_tx.send(res);
         });
 
@@ -2420,21 +2506,6 @@ pub async fn start_chat(
     let mut terminal = terminal::init()?;
 
     let status = loop {
-        let scrollback: Vec<ChatMessage> = client
-            .get(&format!(
-                "/projects/{}/features/{}/chat/sessions/{}/list",
-                project.id, feature.id, session.id
-            ))
-            .send()
-            .await?
-            .error_body_for_status()
-            .await?
-            .json::<Vec<api::ChatMessage>>()
-            .await?
-            .into_iter()
-            .map(Into::into)
-            .collect();
-
         let url = websocket_url(&client.base_url);
         let (mut ws_stream, _) = connect_async(url).await.expect("Failed to connect");
 
@@ -2457,10 +2528,10 @@ pub async fn start_chat(
             &session,
             current_user,
             sessions.clone(),
-            &scrollback,
             ws_stream,
             client,
-        );
+        )
+        .await?;
 
         let status = app.run(&mut terminal).await;
         match status {

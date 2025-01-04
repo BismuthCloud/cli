@@ -51,7 +51,6 @@ pub struct Project {
     pub clone_token: String,
     pub github_repo: Option<String>,
     pub github_app_install: Option<GitHubAppInstall>,
-    #[serde(default = "default_true")]
     pub has_pushed: bool,
 }
 
@@ -231,6 +230,8 @@ pub mod ws {
             commit_message: Option<String>,
             output_modified_files: Vec<ChatModifiedFile>,
             id: u64,
+            // Option only for transitional
+            credits_used: Option<u64>,
         },
     }
 
@@ -347,6 +348,7 @@ pub mod ws {
         FileRPCResponse(FileRPCResponse),
         KillGeneration,
         Error(String),
+        Usage(u64),
     }
 
     impl Serialize for Message {
@@ -454,6 +456,16 @@ pub mod ws {
                     )
                     .map_err(serde::de::Error::custom)?;
                     Ok(Message::FileRPC(req))
+                }
+                Some("USAGE") => {
+                    let response = serde_json::from_value(
+                        value
+                            .get("usage")
+                            .ok_or(serde::de::Error::custom("missing inner usage"))?
+                            .clone(),
+                    )
+                    .map_err(serde::de::Error::custom)?;
+                    Ok(Message::Usage(response))
                 }
                 None if value.get("error").is_some() => {
                     // Handle generic {"error": "asdf"} messages that come if the backend raises an error
