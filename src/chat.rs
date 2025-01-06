@@ -1532,7 +1532,8 @@ impl App {
                             }
                             if let Some(credits_used) = credits_used {
                                 let mut credit_remaining = credit_remaining.lock().unwrap();
-                                *credit_remaining -= credits_used;
+                                *credit_remaining =
+                                    (*credit_remaining).saturating_sub(credits_used);
                             }
 
                             revert(repo_path).unwrap();
@@ -2257,6 +2258,7 @@ impl App {
 /feedback <DESCRIPTION>: Send us feedback
 /diff: Review the last diff Bismuth made
 /refill: Open billing page to refill credits
+/quit or Ctrl+C: Exit the chat
 /help: Show this help"#
                                 .to_string(),
                         );
