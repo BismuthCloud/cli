@@ -857,7 +857,7 @@ impl Widget for &mut ChatHistoryWidget {
                     self.project.name,
                     self.feature.name,
                     match &self.session._name {
-                        Some(name) => format!("- {}", name),
+                        Some(name) => format!(" - {}", name),
                         None => "".to_string(),
                     }
                 ))
