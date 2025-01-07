@@ -786,13 +786,18 @@ struct Tokens {
 async fn oidc_server(api_url: &Url) -> Result<String> {
     let server = tiny_http::Server::http("localhost:0").map_err(|e| anyhow!(e))?;
     let port = server.server_addr().to_ip().unwrap().port();
-    press_any_key("Press any key to open the login page.").await?;
-    open::that_detached(
-        api_url
-            .join(&format!("auth/cli?port={}", port))
-            .unwrap()
-            .as_str(),
-    )?;
+    let url = api_url
+        .join(&format!("auth/cli?port={}", port))
+        .unwrap()
+        .to_string();
+
+    if cfg!(target_os = "macos") {
+        press_any_key("Press any key to open the login page.").await?;
+        open::that_detached(url)?;
+    } else {
+        println!("Go to the following URL to authenticate: {}", url.blue().bold());
+    }
+
     let request = tokio::task::spawn_blocking(move || {
         server
             .incoming_requests()
