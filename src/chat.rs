@@ -1354,6 +1354,7 @@ enum AppState {
     ReviewDiff(DiffReviewWidget),
     // Sort of a hacky way to feed state from the event input loop back up
     ChangeSession(api::ChatSession),
+    ChangeMode(api::ChatSession),
     ACI(ACIVizWidget),
     Exit,
 }
@@ -1917,6 +1918,9 @@ impl App {
                 AppState::ChangeSession(new_session) => {
                     return Ok(Some(new_session));
                 }
+                AppState::ChangeMode(session) => {
+                    return Ok(Some(session));
+                }
                 AppState::ReviewDiff(diff) => match event::read()? {
                     Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
                         KeyCode::Char('y') if diff.can_apply => {
@@ -2257,6 +2261,13 @@ impl App {
                 match input.split(' ').next().unwrap() {
                     "/exit" | "/quit" => {
                         *state = AppState::Exit;
+                    }
+                    "/mode" | "/m" => {
+                        write
+                            .send(Message::Text(serde_json::to_string(
+                                &api::ws::Message::SwitchMode,
+                            )?))
+                            .await?;
                     }
                     "/help" => {
                         *state = AppState::Popup(

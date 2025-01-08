@@ -132,11 +132,19 @@ impl Display for GitHubAppInstall {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SessionMode {
+    MultiTurn,
+    SingleTurn,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChatSession {
     pub id: u64,
     #[serde(rename = "name")]
     pub _name: Option<String>,
+    #[serde(rename = "mode")]
+    pub _mode: SessionMode,
 }
 
 impl ChatSession {
@@ -349,6 +357,7 @@ pub mod ws {
         KillGeneration,
         Error(String),
         Usage(u64),
+        SwitchMode,
     }
 
     impl Serialize for Message {
