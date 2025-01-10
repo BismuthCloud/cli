@@ -94,7 +94,7 @@ impl ResponseErrorExt for reqwest::Response {
 
 macro_rules! can_launch_browser {
     () => {
-        cfg!(target_os = "macos")
+        cfg!(target_os = "macos") || cfg!(target_os = "windows")
     };
 }
 
@@ -168,31 +168,27 @@ async fn press_any_key(msg: &str) -> Result<()> {
 }
 
 #[cfg(target_os = "windows")]
-async fn press_any_key(msg: &str) -> io::Result<()> {
+async fn press_any_key(msg: &str) -> Result<()> {
     use windows::Win32::System::Console::{
         GetConsoleMode, GetStdHandle, SetConsoleMode, CONSOLE_MODE, ENABLE_ECHO_INPUT,
         ENABLE_LINE_INPUT, STD_INPUT_HANDLE,
     };
 
     println!("{}", msg);
-    io::stdout().flush()?;
+    std::io::stdout().flush()?;
 
-    let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) }
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) }?;
 
     let mut original_mode = CONSOLE_MODE::default();
-    unsafe { GetConsoleMode(handle, &mut original_mode) }
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    unsafe { GetConsoleMode(handle, &mut original_mode) };
 
     let new_mode = CONSOLE_MODE(original_mode.0 & !(ENABLE_LINE_INPUT.0 | ENABLE_ECHO_INPUT.0));
-    unsafe { SetConsoleMode(handle, new_mode) }
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    unsafe { SetConsoleMode(handle, new_mode) };
 
     let mut buffer = [0u8; 1];
-    io::stdin().read_exact(&mut buffer)?;
+    std::io::stdin().read_exact(&mut buffer)?;
 
-    unsafe { SetConsoleMode(handle, original_mode) }
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    unsafe { SetConsoleMode(handle, original_mode) };
 
     Ok(())
 }

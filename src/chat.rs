@@ -1587,7 +1587,8 @@ impl App {
                             }
                         }
                         let proc_future = async {
-                            let mut proc = tokio::process::Command::new("sh")
+                            let mut proc = if cfg!(not(target_os = "windows")) {
+                                tokio::process::Command::new("sh")
                                 .arg("-c")
                                 .arg(&cmd.command)
                                 .stdin(std::process::Stdio::null())
@@ -1596,7 +1597,19 @@ impl App {
                                 .current_dir(&repo_path)
                                 .env("TERM", "dumb")
                                 .spawn()
-                                .unwrap();
+                                .unwrap()
+                            } else {
+                                tokio::process::Command::new("cmd")
+                                .arg("/C")
+                                .arg(&cmd.command)
+                                .stdin(std::process::Stdio::null())
+                                .stdout(std::process::Stdio::piped())
+                                .stderr(std::process::Stdio::piped())
+                                .current_dir(&repo_path)
+                                .env("TERM", "dumb")
+                                .spawn()
+                                .unwrap()
+                            };
 
                             let stdout = LinesStream::new(
                                 tokio::io::BufReader::new(proc.stdout.take().unwrap()).lines(),
