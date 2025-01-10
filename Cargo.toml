@@ -37,13 +37,18 @@ two-face = "0.4.0"
 textwrap = "0.16.1"
 tui-textarea = "0.6.0"
 once_cell = "1.19.0"
-termios = "0.3.3"
 clap-markdown = "0.1.4"
 copypasta = "0.10.1"
 derivative = "2.2.0"
 tokio-stream = {version = "0.1.16", features = ["io-util"]}
 toml = "0.8.19"
 globset = {version = "0.4.15", features = ["serde1"]}
+
+[target.'cfg(not(windows))'.dependencies]
+termios = "0.3.3"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.48", features = ["Win32_System_Console"] }
 
 [dev-dependencies]
 tempfile = "3.12.0"

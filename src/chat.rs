@@ -2659,8 +2659,14 @@ mod terminal {
             EnterAlternateScreen,
             EnableMouseCapture,
             EnableBracketedPaste,
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
         )?;
+        #[cfg(not(target_os = "windows"))]
+        {
+            execute!(
+                io::stdout(),
+                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+            )?;
+        }
         let backend = CrosstermBackend::new(io::stdout());
         Terminal::new(backend)
     }
@@ -2676,14 +2682,19 @@ mod terminal {
     /// Restores the terminal to its original state.
     pub fn restore() {
         debug!("Restoring terminal");
+        #[cfg(not(target_os = "windows"))]
+        {
+            if let Err(err) = execute!(io::stdout(), PopKeyboardEnhancementFlags) {
+                eprintln!("error restoring terminal: {err}");
+            }
+        }
         if let Err(err) = execute!(
             io::stdout(),
-            PopKeyboardEnhancementFlags,
             DisableBracketedPaste,
             DisableMouseCapture,
             LeaveAlternateScreen,
         ) {
-            eprintln!("error leaving alternate screen: {err}");
+            eprintln!("error restoring terminal: {err}");
         }
         if let Err(err) = disable_raw_mode() {
             eprintln!("error disabling raw mode: {err}");

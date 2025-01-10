@@ -154,6 +154,7 @@ async fn confirm(prompt: impl Into<String>, default: bool) -> Result<bool> {
     Ok(confirm == "y")
 }
 
+#[cfg(not(target_os = "windows"))]
 async fn press_any_key(msg: &str) -> Result<()> {
     println!("{}", msg);
     std::io::stdout().flush()?;
@@ -163,6 +164,36 @@ async fn press_any_key(msg: &str) -> Result<()> {
     termios::tcsetattr(0, termios::TCSANOW, &new_termios).unwrap();
     std::io::stdin().read(&mut [0])?;
     termios::tcsetattr(0, termios::TCSANOW, &termios).unwrap();
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+async fn press_any_key(msg: &str) -> io::Result<()> {
+    use windows::Win32::System::Console::{
+        GetConsoleMode, GetStdHandle, SetConsoleMode, CONSOLE_MODE, ENABLE_ECHO_INPUT,
+        ENABLE_LINE_INPUT, STD_INPUT_HANDLE,
+    };
+
+    println!("{}", msg);
+    io::stdout().flush()?;
+
+    let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) }
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    let mut original_mode = CONSOLE_MODE::default();
+    unsafe { GetConsoleMode(handle, &mut original_mode) }
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    let new_mode = CONSOLE_MODE(original_mode.0 & !(ENABLE_LINE_INPUT.0 | ENABLE_ECHO_INPUT.0));
+    unsafe { SetConsoleMode(handle, new_mode) }
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    let mut buffer = [0u8; 1];
+    io::stdin().read_exact(&mut buffer)?;
+
+    unsafe { SetConsoleMode(handle, original_mode) }
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
     Ok(())
 }
 
