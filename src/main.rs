@@ -92,6 +92,12 @@ impl ResponseErrorExt for reqwest::Response {
     }
 }
 
+macro_rules! can_launch_browser {
+    () => {
+        cfg!(target_os = "macos")
+    };
+}
+
 async fn choice<'a, 'b, T>(things: &'a [T], name: &'b str) -> Result<&'a T>
 where
     T: ToString,
@@ -460,8 +466,18 @@ async fn project_import(args: &cli::ImportArgs, client: &APIClient) -> Result<()
 
         if gh_repos.is_empty() {
             println!("You'll need to install the GitHub App first.");
-            press_any_key("Press any key to open the installation page.").await?;
-            open::that_detached(github_app_url(&client.base_url))?;
+
+            let url = github_app_url(&client.base_url);
+            if can_launch_browser!() {
+                press_any_key("Press any key to open the installation page.").await?;
+                open::that_detached(url)?;
+            } else {
+                println!(
+                    "Go to the following URL to install the app: {}",
+                    url.blue().bold()
+                );
+            }
+
             print!("Waiting for app install");
             std::io::stdout().flush()?;
             loop {
@@ -791,11 +807,14 @@ async fn oidc_server(api_url: &Url) -> Result<String> {
         .unwrap()
         .to_string();
 
-    if cfg!(target_os = "macos") {
+    if can_launch_browser!() {
         press_any_key("Press any key to open the login page.").await?;
         open::that_detached(url)?;
     } else {
-        println!("Go to the following URL to authenticate: {}", url.blue().bold());
+        println!(
+            "Go to the following URL to authenticate: {}",
+            url.blue().bold()
+        );
     }
 
     let request = tokio::task::spawn_blocking(move || {
@@ -1099,8 +1118,18 @@ async fn _main() -> Result<()> {
                     .await?;
                 if gh_orgs.is_empty() {
                     println!("You'll need to install the GitHub app first.");
-                    press_any_key("Press any key to open the installation page.").await?;
-                    open::that_detached(github_app_url(&client.base_url))?;
+
+                    let url = github_app_url(&client.base_url);
+                    if can_launch_browser!() {
+                        press_any_key("Press any key to open the installation page.").await?;
+                        open::that_detached(url)?;
+                    } else {
+                        println!(
+                            "Go to the following URL to install the app: {}",
+                            url.blue().bold()
+                        );
+                    }
+
                     print!("Waiting for app install");
                     std::io::stdout().flush()?;
                     loop {
@@ -1500,7 +1529,6 @@ async fn _main() -> Result<()> {
                     .json::<api::Organization>()
                     .await?;
                 let url = if org.subscription.r#type == api::SubscriptionType::Individual {
-                    println!("Opening subscription upgrade page");
                     client
                         .get("/billing/upgrade")
                         .query(&[("tier", "PROFESSIONAL")])
@@ -1511,7 +1539,6 @@ async fn _main() -> Result<()> {
                         .text()
                         .await?
                 } else {
-                    println!("Opening subscription management page");
                     client
                         .get("/billing/manage")
                         .send()
@@ -1521,7 +1548,15 @@ async fn _main() -> Result<()> {
                         .text()
                         .await?
                 };
-                open::that_detached(url)?;
+                if can_launch_browser!() {
+                    println!("Opening subscription management page");
+                    open::that_detached(url)?;
+                } else {
+                    println!(
+                        "Go to the following URL to manage your subscription: {}",
+                        url.blue().bold()
+                    );
+                }
                 Ok(())
             }
             cli::BillingCommand::CreditsRemaining => {
@@ -1548,8 +1583,12 @@ async fn _main() -> Result<()> {
                     .await?
                     .text()
                     .await?;
-                println!("Opening checkout page");
-                open::that_detached(url)?;
+                if can_launch_browser!() {
+                    println!("Opening checkout page");
+                    open::that_detached(url)?;
+                } else {
+                    println!("Go to the following URL to checkout: {}", url.blue().bold());
+                }
                 Ok(())
             }
         },
