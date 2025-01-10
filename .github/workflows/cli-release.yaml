@@ -85,7 +85,7 @@ jobs:
       - name: Build Release (${{ matrix.target }})
         run: |
           cross build --release --target ${{ matrix.target }}
-          mv target/${{ matrix.target }}/release/cli bismuthcli.${{ matrix.target }}
+          mv target/${{ matrix.target }}/release/cli.exe bismuthcli.${{ matrix.target }}
 
       - name: Upload Release (${{ matrix.target }}) Binaries
         uses: softprops/action-gh-release@v2
@@ -94,7 +94,7 @@ jobs:
 
   update-version-page:
     runs-on: ubuntu-latest
-    needs: [linux-build-push, macos-build-push]
+    needs: [linux-build-push, macos-build-push, windows-build-push]
     if: "!contains(github.ref, '-rc')"
     environment:
       name: github-pages
