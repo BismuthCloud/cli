@@ -844,7 +844,7 @@ struct ChatHistoryWidget {
     session: api::ChatSession,
     feature: api::Feature,
     project: api::Project,
-    credit_remaining: Arc<Mutex<u64>>,
+    credit_remaining: Arc<Mutex<i32>>,
 }
 
 impl Widget for &mut ChatHistoryWidget {
@@ -870,7 +870,7 @@ impl Widget for &mut ChatHistoryWidget {
                         Span::raw(format!("{} ", credit_remaining))
                     } else {
                         Span::styled(
-                            "0 ",
+                            format!("{} ", credit_remaining),
                             ratatui::style::Style::default().fg(ratatui::style::Color::Red),
                         )
                     },
@@ -1432,8 +1432,7 @@ impl App {
                 feature: feature.clone(),
                 project: project.clone(),
                 credit_remaining: Arc::new(Mutex::new(
-                    (credits.plan_included - credits.plan_used + credits.purchased_remaining).max(0)
-                        as u64,
+                    credits.plan_included - credits.plan_used + credits.purchased_remaining,
                 )),
             },
             input: tui_textarea::TextArea::default(),
@@ -1460,7 +1459,7 @@ impl App {
         read: &mut SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
         write: &mpsc::Sender<tokio_tungstenite::tungstenite::Message>,
         scrollback: Arc<Mutex<Vec<ChatMessage>>>,
-        credit_remaining: Arc<Mutex<u64>>,
+        credit_remaining: Arc<Mutex<i32>>,
         repo_path: &Path,
         state: Arc<Mutex<AppState>>,
     ) -> Result<()> {
@@ -1532,8 +1531,7 @@ impl App {
                             }
                             if let Some(credits_used) = credits_used {
                                 let mut credit_remaining = credit_remaining.lock().unwrap();
-                                *credit_remaining =
-                                    (*credit_remaining).saturating_sub(credits_used);
+                                *credit_remaining -= credits_used as i32;
                             }
 
                             revert(repo_path).unwrap();
