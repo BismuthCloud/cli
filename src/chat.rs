@@ -1941,7 +1941,7 @@ impl App {
                             let mut state = self.state.lock().unwrap();
                             *state = AppState::Chat;
                         }
-                        KeyCode::Char('n') | KeyCode::Esc if diff.can_apply => {
+                        KeyCode::Char('n') if diff.can_apply => {
                             revert(&self.repo_path)?;
                             let client = self.client.clone();
                             let project = self.project.id;
