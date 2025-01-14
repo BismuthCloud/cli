@@ -1350,6 +1350,7 @@ impl Widget for &mut ACIVizWidget {
 #[derive(Clone, Debug)]
 enum AppState {
     Chat,
+    TerminalReset,
     SelectSession(SelectSessionWidget),
     Popup(String, String),
     ReviewDiff(DiffReviewWidget),
@@ -1783,7 +1784,8 @@ impl App {
                                     widget.status = status;
                                 }
                                 api::ws::ACIMessage::End => {
-                                    *state = AppState::Chat;
+                                    // Fully reset terminal before going back to chat to clear any corruption from running commands
+                                    *state = AppState::TerminalReset;
                                 }
                             }
                         }
@@ -1895,6 +1897,13 @@ impl App {
             if let Ok(res) = dead_rx.try_recv() {
                 return res.map(|_| None);
             }
+            if let AppState::TerminalReset = state {
+                terminal.clear()?;
+                let mut state = self.state.lock().unwrap();
+                *state = AppState::Chat;
+                continue;
+            }
+
             if last_draw.elapsed() > Duration::from_millis(40) {
                 last_draw = Instant::now();
                 terminal.draw(|frame| {
@@ -1906,11 +1915,13 @@ impl App {
                     )
                 })?;
             }
+
             if !tokio::task::spawn_blocking(move || event::poll(Duration::from_millis(40)))
                 .await??
             {
                 continue;
             }
+
             match state {
                 AppState::Exit => {
                     return Ok(None);
@@ -2240,6 +2251,8 @@ impl App {
                     },
                     _ => {}
                 },
+                // Handled before event polling
+                AppState::TerminalReset => {}
             }
         }
     }
