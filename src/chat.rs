@@ -1,3 +1,4 @@
+use core::panic;
 use std::{
     cell::OnceCell,
     collections::HashSet,
@@ -853,12 +854,26 @@ impl Widget for &mut ChatHistoryWidget {
         let block = Block::new()
             .title(
                 Title::from(format!(
-                    " Chat History ({}/{}{}) ",
+                    " Chat History ({}/{}{}) -- Mode: {} ",
                     self.project.name,
                     self.feature.name,
                     match &self.session._name {
                         Some(name) => format!(" - {}", name),
                         None => "".to_string(),
+                    },
+                    match &self.session._context_storage {
+                        serde_json::Value::Object(map) => {
+                            if let Some(serde_json::Value::String(context)) = map.get("mode") {
+                                if context == "multi" {
+                                    "Multi Turn".to_string()
+                                } else {
+                                    "Single Turn".to_string()
+                                }
+                            } else {
+                                "Multi Turn".to_string()
+                            }
+                        }
+                        _ => "Multi Turn".to_string(),
                     }
                 ))
                 .alignment(ratatui::layout::Alignment::Left),
@@ -1354,7 +1369,7 @@ enum AppState {
     ReviewDiff(DiffReviewWidget),
     // Sort of a hacky way to feed state from the event input loop back up
     ChangeSession(api::ChatSession),
-    ChangeMode(api::ChatSession),
+    SwitchMode,
     ACI(ACIVizWidget),
     Exit,
 }
@@ -1843,6 +1858,10 @@ impl App {
                         widget.usage = usage;
                     }
                 }
+                api::ws::Message::SwitchModeResponse => {
+                    let mut state = state.lock().unwrap();
+                    *state = AppState::SwitchMode;
+                }
                 _ => {}
             }
         }
@@ -1918,8 +1937,11 @@ impl App {
                 AppState::ChangeSession(new_session) => {
                     return Ok(Some(new_session));
                 }
-                AppState::ChangeMode(session) => {
-                    return Ok(Some(session));
+                AppState::SwitchMode => {
+                    // self.session.swap_mode();
+                    panic!("Fuck.");
+                    let mut state = self.state.lock().unwrap();
+                    *state = AppState::Chat;
                 }
                 AppState::ReviewDiff(diff) => match event::read()? {
                     Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {

@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{fmt::Display, hash::Hash};
 
 use serde::{Deserialize, Serialize};
 
@@ -143,8 +143,8 @@ pub struct ChatSession {
     pub id: u64,
     #[serde(rename = "name")]
     pub _name: Option<String>,
-    #[serde(rename = "mode")]
-    pub _mode: SessionMode,
+    #[serde(rename = "context_storage")]
+    pub _context_storage: serde_json::Value,
 }
 
 impl ChatSession {
@@ -152,6 +152,30 @@ impl ChatSession {
         match &self._name {
             Some(name) => name.clone(),
             None => format!("session-{}", self.id),
+        }
+    }
+
+    pub fn swap_mode(&mut self) {
+        if let serde_json::Value::Object(mut obj) = self._context_storage.clone() {
+            // If it's an object, work with it directly
+            let new_mode = match obj.get("mode") {
+                Some(serde_json::Value::String(mode)) if mode == "single" => "multi",
+                Some(serde_json::Value::String(mode)) if mode == "multi" => "single",
+                _ => "multi", // Default case
+            };
+            obj.insert(
+                "mode".to_string(),
+                serde_json::Value::String(new_mode.to_string()),
+            );
+            self._context_storage = serde_json::Value::Object(obj);
+        } else {
+            // If it wasn't an object before, set it to "single" since default was "multi"
+            let mut obj = serde_json::Map::new();
+            obj.insert(
+                "mode".to_string(),
+                serde_json::Value::String("single".to_string()),
+            );
+            self._context_storage = serde_json::Value::Object(obj);
         }
     }
 }
@@ -358,6 +382,7 @@ pub mod ws {
         Error(String),
         Usage(u64),
         SwitchMode,
+        SwitchModeResponse,
     }
 
     impl Serialize for Message {
@@ -366,6 +391,16 @@ pub mod ws {
             S: serde::Serializer,
         {
             match *self {
+                Message::SwitchMode => {
+                    let mut state = serializer.serialize_struct("Message", 1)?;
+                    state.serialize_field("type", "SWITCH_MODE")?;
+                    state.end()
+                }
+                Message::SwitchModeResponse => {
+                    let mut state = serializer.serialize_struct("Message", 1)?;
+                    state.serialize_field("type", "SWITCH_MODE_RESPONSE")?;
+                    state.end()
+                }
                 Message::Auth(ref auth) => {
                     let mut state = serializer.serialize_struct("Message", 2)?;
                     state.serialize_field("type", "AUTH")?;
@@ -436,6 +471,7 @@ pub mod ws {
                     .map_err(serde::de::Error::custom)?;
                     Ok(Message::ResponseState(state))
                 }
+                Some("SWITCH_MODE_RESPONSE") => Ok(Message::SwitchModeResponse),
                 Some("RUN_COMMAND") => {
                     let command = serde_json::from_value(
                         value
