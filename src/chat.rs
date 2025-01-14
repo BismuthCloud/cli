@@ -1108,12 +1108,14 @@ impl DiffReviewWidget {
 
 impl Widget for &mut DiffReviewWidget {
     fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
+        let area = centered(self.h_scroll_max, self.lines.len(), area);
+
         self.v_scroll_position = self
             .v_scroll_position
-            .min(self.v_scroll_max.saturating_sub(area.height as usize));
+            .min(self.v_scroll_max.saturating_sub(area.height as usize - 2));
         self.h_scroll_position = self
             .h_scroll_position
-            .min(self.h_scroll_max.saturating_sub(area.width as usize));
+            .min(self.h_scroll_max.saturating_sub(area.width as usize - 2));
 
         let paragraph = Paragraph::new(
             self.lines
@@ -1134,14 +1136,13 @@ impl Widget for &mut DiffReviewWidget {
         self.v_scroll_state = self
             .v_scroll_state
             .position(self.v_scroll_position)
-            .content_length(self.v_scroll_max.saturating_sub(area.height as usize));
+            .content_length(self.v_scroll_max.saturating_sub(area.height as usize - 2));
 
         self.h_scroll_state = self
             .h_scroll_state
             .position(self.h_scroll_position)
-            .content_length(self.h_scroll_max.saturating_sub(area.width as usize));
+            .content_length(self.h_scroll_max.saturating_sub(area.width as usize - 2));
 
-        let area = centered(self.h_scroll_max, self.lines.len(), area);
         Clear.render(area, buf);
         paragraph.render(area, buf);
         StatefulWidget::render(
