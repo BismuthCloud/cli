@@ -948,7 +948,7 @@ async fn _main() -> Result<()> {
         .filter_level(args.global.verbose.log_level_filter())
         .init();
 
-    if std::env::var("BISMUTH_NO_VERSION_CHECK").is_err() {
+    if !cfg!(debug_assertions) && std::env::var("BISMUTH_NO_VERSION_CHECK").is_err() {
         let _ = check_version().await;
     }
 

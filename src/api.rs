@@ -1,7 +1,6 @@
-use std::{fmt::Display, hash::Hash};
+use std::fmt::Display;
 
-use futures::SinkExt;
-use log::{debug, trace};
+use log::trace;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -37,10 +36,6 @@ impl Display for Organization {
 pub struct Feature {
     pub id: u64,
     pub name: String,
-}
-
-fn default_true() -> bool {
-    return true;
 }
 
 #[derive(Clone, Debug, Deserialize)]

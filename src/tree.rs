@@ -3,17 +3,15 @@ use ratatui::{
     crossterm::event::{Event, KeyCode, KeyEvent, MouseButton, MouseEventKind},
     layout::Rect,
     style::{Color, Style},
-    widgets::{
-        block::Title, Block, Borders, Clear, Padding, Paragraph, Scrollbar, ScrollbarState,
-        StatefulWidget, Tabs, Widget,
-    },
+    text::{Line, Span},
+    widgets::{block::Title, Block, Borders, Widget},
 };
 
-use log::{debug, trace};
+use log::trace;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum TreeNodeStyle {
     Default,
     Pinned,
@@ -247,12 +245,20 @@ impl FileTreeWidget {
             _ => {}
         }
     }
+
+    fn descendant_selected(&self, node_idx: usize) -> bool {
+        let node = &self.nodes[node_idx];
+        node.children.iter().any(|&child_idx| {
+            self.nodes[child_idx].style == TreeNodeStyle::Pinned
+                || self.descendant_selected(child_idx)
+        })
+    }
 }
 
 impl Widget for &mut FileTreeWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let block = Block::new()
-            .title(Title::from("Pinned File Context").alignment(ratatui::layout::Alignment::Left))
+            .title(Title::from(" Pinned File Context ").alignment(ratatui::layout::Alignment::Left))
             .borders(ratatui::widgets::Borders::ALL);
 
         // Get the inner area of the block for content
@@ -288,19 +294,31 @@ impl Widget for &mut FileTreeWidget {
 
             let prefix = if node.is_dir {
                 if self.expanded.contains(&node.full_path) {
-                    "▼ "
+                    if self.descendant_selected(*node_idx) {
+                        "▼ "
+                    } else {
+                        "▽ "
+                    }
                 } else {
-                    "▶ "
+                    if self.descendant_selected(*node_idx) {
+                        "▶ "
+                    } else {
+                        "▷ "
+                    }
                 }
             } else {
                 "  "
             };
 
             let indent = "│ ".repeat(node.depth);
-            let line = format!("{}{}{}", indent, prefix, node.name);
-
-            // Render the line in the inner area
-            buf.set_string(inner_area.x, inner_area.y + i as u16, &line, style);
+            let line = Line::from(vec![
+                Span::styled(&indent, Style::default()),
+                Span::styled(prefix, style),
+                Span::styled(&node.name, style),
+            ]);
+            let mut line_area = inner_area;
+            line_area.y += i as u16;
+            line.render(line_area, buf);
         }
     }
 }

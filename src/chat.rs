@@ -1,4 +1,3 @@
-use core::panic;
 use std::{
     cell::OnceCell,
     collections::HashSet,
@@ -855,13 +854,19 @@ impl Widget for &mut ChatHistoryWidget {
         let block = Block::new()
             .title(
                 Title::from(format!(
-                    " Chat History ({}/{}{}) -- Mode: {} ",
+                    " Chat History ({}/{}{}) ",
                     self.project.name,
                     self.feature.name,
                     match &self.session.read().unwrap()._name {
                         Some(name) => format!(" - {}", name),
                         None => "".to_string(),
                     },
+                ))
+                .alignment(ratatui::layout::Alignment::Left),
+            )
+            .title(
+                Title::from(format!(
+                    " Mode: {} ",
                     match &self.session.read().unwrap()._context_storage {
                         Some(storage) => {
                             if storage.mode == "multi" {
@@ -877,7 +882,7 @@ impl Widget for &mut ChatHistoryWidget {
                         _ => "Full".to_string(),
                     }
                 ))
-                .alignment(ratatui::layout::Alignment::Left),
+                .alignment(ratatui::layout::Alignment::Right),
             )
             .title(
                 Title::from(vec![
@@ -2230,10 +2235,6 @@ impl App {
                                 );
 
                                 if is_in_area(&mouse, fb_area) {
-                                    trace!("We are in this area.");
-                                    trace!("We are in this area.");
-                                    trace!("We are in this area.");
-                                    trace!("We are in this area.");
                                     self.file_browser.handle_event(&next_event, fb_area);
                                 } else {
                                     match mouse.kind {
@@ -2266,8 +2267,8 @@ impl App {
                                                         - self.chat_history.scroll_position
                                                             as isize)
                                                         == (mouse.row as isize) - 1
-                                                        && (mouse.column as usize == 1
-                                                            || mouse.column as usize == 2)
+                                                        && (mouse.column == fb_area.width + 1
+                                                            || mouse.column == fb_area.width + 2)
                                                     {
                                                         clipboard_ctx
                                                             .set_contents(block.raw.clone())
