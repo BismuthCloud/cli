@@ -1,5 +1,7 @@
 use std::{fmt::Display, hash::Hash};
 
+use futures::SinkExt;
+use log::{debug, trace};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -132,10 +134,68 @@ impl Display for GitHubAppInstall {
     }
 }
 
+fn default_mode() -> String {
+    "multi".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SessionMode {
     MultiTurn,
     SingleTurn,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ContextStorage {
+    #[serde(default)]
+    pub pinned_files: Vec<String>,
+    #[serde(default = "default_mode")]
+    pub mode: String,
+}
+
+impl<'de> Deserialize<'de> for ContextStorage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Helper {
+            #[serde(default = "default_mode")]
+            mode: String,
+            #[serde(default)]
+            pinned_files: Vec<String>,
+        }
+
+        let value = serde_json::Value::deserialize(deserializer)?;
+
+        match value {
+            serde_json::Value::String(s) => {
+                trace!("WTF STRING: {:?}", s);
+
+                if s == "null" {
+                    Ok(ContextStorage {
+                        mode: "multi".to_string(),
+                        pinned_files: vec![],
+                    })
+                } else {
+                    let helper: Helper =
+                        serde_json::from_str(&s).map_err(serde::de::Error::custom)?;
+                    Ok(ContextStorage {
+                        mode: helper.mode,
+                        pinned_files: helper.pinned_files,
+                    })
+                }
+            }
+            value => {
+                trace!("WTF: {:?}", value);
+                let helper: Helper =
+                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+                Ok(ContextStorage {
+                    mode: helper.mode,
+                    pinned_files: helper.pinned_files,
+                })
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -144,7 +204,7 @@ pub struct ChatSession {
     #[serde(rename = "name")]
     pub _name: Option<String>,
     #[serde(rename = "context_storage")]
-    pub _context_storage: serde_json::Value,
+    pub _context_storage: Option<ContextStorage>,
 }
 
 impl ChatSession {
@@ -155,27 +215,32 @@ impl ChatSession {
         }
     }
 
+    pub fn pinned_files(&self) -> Vec<String> {
+        match self._context_storage.clone() {
+            Some(storage) => storage.pinned_files,
+            _ => vec![],
+        }
+    }
+
     pub fn swap_mode(&mut self) {
-        if let serde_json::Value::Object(mut obj) = self._context_storage.clone() {
-            // If it's an object, work with it directly
-            let new_mode = match obj.get("mode") {
-                Some(serde_json::Value::String(mode)) if mode == "single" => "multi",
-                Some(serde_json::Value::String(mode)) if mode == "multi" => "single",
-                _ => "multi", // Default case
-            };
-            obj.insert(
-                "mode".to_string(),
-                serde_json::Value::String(new_mode.to_string()),
-            );
-            self._context_storage = serde_json::Value::Object(obj);
-        } else {
-            // If it wasn't an object before, set it to "single" since default was "multi"
-            let mut obj = serde_json::Map::new();
-            obj.insert(
-                "mode".to_string(),
-                serde_json::Value::String("single".to_string()),
-            );
-            self._context_storage = serde_json::Value::Object(obj);
+        match self._context_storage.clone() {
+            Some(mut storage) => {
+                storage.mode = match storage.mode.as_str() {
+                    "single" => "chat",
+                    "multi" => "single",
+                    "chat" => "multi",
+                    _ => "multi",
+                }
+                .to_string();
+
+                self._context_storage = Some(storage);
+            }
+            _ => {
+                self._context_storage = Some(ContextStorage {
+                    pinned_files: vec![],
+                    mode: "single".to_string(),
+                });
+            }
         }
     }
 }
@@ -292,6 +357,11 @@ pub mod ws {
         pub command: String,
     }
 
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    pub struct PinFileMessage {
+        pub path: String,
+    }
+
     #[derive(Debug, Serialize)]
     pub struct RunCommandResponse {
         pub exit_code: i32,
@@ -383,6 +453,8 @@ pub mod ws {
         Usage(u64),
         SwitchMode,
         SwitchModeResponse,
+        PinFile(PinFileMessage),
+        PinFileResponse,
     }
 
     impl Serialize for Message {
@@ -399,6 +471,17 @@ pub mod ws {
                 Message::SwitchModeResponse => {
                     let mut state = serializer.serialize_struct("Message", 1)?;
                     state.serialize_field("type", "SWITCH_MODE_RESPONSE")?;
+                    state.end()
+                }
+                Message::PinFileResponse => {
+                    let mut state = serializer.serialize_struct("Message", 1)?;
+                    state.serialize_field("type", "PIN_FILE_RESPONSE")?;
+                    state.end()
+                }
+                Message::PinFile(ref pin) => {
+                    let mut state = serializer.serialize_struct("Message", 2)?;
+                    state.serialize_field("type", "PIN_FILE")?;
+                    state.serialize_field("pin", pin)?;
                     state.end()
                 }
                 Message::Auth(ref auth) => {
@@ -472,6 +555,7 @@ pub mod ws {
                     Ok(Message::ResponseState(state))
                 }
                 Some("SWITCH_MODE_RESPONSE") => Ok(Message::SwitchModeResponse),
+                Some("PIN_FILE_RESPONSE") => Ok(Message::PinFileResponse),
                 Some("RUN_COMMAND") => {
                     let command = serde_json::from_value(
                         value

@@ -20,6 +20,7 @@ use url::Url;
 
 mod api;
 mod cli;
+mod tree;
 use cli::{Cli, IdOrName};
 mod chat;
 use chat::start_chat;
