@@ -1222,6 +1222,23 @@ struct ACIVizWidget {
     usage: u64,
 }
 
+fn truncate_path(path: &str, max_len: usize) -> String {
+    if path.len() <= max_len {
+        return path.to_string();
+    }
+
+    let components: Vec<&str> = path.split('/').collect();
+    let mut result = components.join("/");
+    let mut start_idx = 0;
+
+    while result.len() > max_len && start_idx < components.len() - 1 {
+        start_idx += 1;
+        result = format!(".../{}", components[start_idx..].join("/"));
+    }
+
+    result
+}
+
 impl Widget for &mut ACIVizWidget {
     fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
         let area = area.inner(Margin::new(4, 4));
@@ -1243,7 +1260,7 @@ impl Widget for &mut ACIVizWidget {
         let mut tabs = Tabs::new(
             self.files
                 .iter()
-                .map(|file| format!(" {} ", file))
+                .map(|file| format!(" {} ", truncate_path(file, 36)))
                 .collect::<Vec<_>>(),
         )
         .divider("")
