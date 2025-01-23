@@ -224,7 +224,7 @@ impl ChatSession {
                     "single" => "chat",
                     "multi" => "single",
                     "chat" => "multi",
-                    _ => "multi",
+                    _ => "single",
                 }
                 .to_string();
 
@@ -233,7 +233,7 @@ impl ChatSession {
             _ => {
                 self._context_storage = Some(ContextStorage {
                     pinned_files: vec![],
-                    mode: "multi".to_string(),
+                    mode: "single".to_string(),
                 });
             }
         }
