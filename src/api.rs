@@ -233,7 +233,7 @@ impl ChatSession {
             _ => {
                 self._context_storage = Some(ContextStorage {
                     pinned_files: vec![],
-                    mode: "single".to_string(),
+                    mode: "multi".to_string(),
                 });
             }
         }

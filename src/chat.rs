@@ -1982,6 +1982,13 @@ impl App {
             if let AppState::ChangeSession(new_session) = state {
                 return Ok(Some(new_session));
             }
+            if let AppState::SwitchMode = state {
+                let mut session_write_ref = self.session.write().unwrap();
+                session_write_ref.swap_mode();
+
+                let mut state = self.state.lock().unwrap();
+                *state = AppState::Chat;
+            }
 
             if let Ok(res) = dead_rx.try_recv() {
                 return res.map(|_| None);
@@ -2012,18 +2019,8 @@ impl App {
                 AppState::ChangeSession(new_session) => {
                     return Ok(Some(new_session));
                 }
-                AppState::SwitchMode => {
-                    let mut session_write_ref = self.session.write().unwrap();
-
-                    session_write_ref.swap_mode();
-
-                    drop(session_write_ref);
-
-                    let mut state = self.state.lock().unwrap();
-                    *state = AppState::Chat;
-
-                    drop(state);
-                }
+                // Handled before event polling
+                AppState::SwitchMode => {}
                 AppState::ReviewDiff(diff) => match event::read()? {
                     Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
                         KeyCode::Char('y') if diff.can_apply => {
