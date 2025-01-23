@@ -3,7 +3,7 @@ use std::{
     collections::HashSet,
     path::{Path, PathBuf},
     process::Command,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -35,14 +35,15 @@ use tokio_tungstenite::{
 };
 use url::Url;
 
-use crate::bismuth_toml;
 use crate::{
     api::{
         self,
         ws::{ChatModifiedFile, RunCommandResponse},
     },
+    tree::{FileTreeWidget, TreeNodeStyle},
     APIClient, ResponseErrorExt as _,
 };
+use crate::{bismuth_toml, tree::SimpleTreeNode};
 
 fn websocket_url(api_url: &Url) -> &'static str {
     match api_url.host_str() {
@@ -841,7 +842,7 @@ struct ChatHistoryWidget {
     code_block_hitboxes: Vec<(usize, usize)>,
     message_hitboxes: Vec<(usize, usize)>,
     sessions: Vec<api::ChatSession>,
-    session: api::ChatSession,
+    session: Arc<RwLock<api::ChatSession>>,
     feature: api::Feature,
     project: api::Project,
     credit_remaining: Arc<Mutex<i32>>,
@@ -856,12 +857,32 @@ impl Widget for &mut ChatHistoryWidget {
                     " Chat History ({}/{}{}) ",
                     self.project.name,
                     self.feature.name,
-                    match &self.session._name {
+                    match &self.session.read().unwrap()._name {
                         Some(name) => format!(" - {}", name),
                         None => "".to_string(),
-                    }
+                    },
                 ))
                 .alignment(ratatui::layout::Alignment::Left),
+            )
+            .title(
+                Title::from(format!(
+                    " Mode: {} ",
+                    match &self.session.read().unwrap()._context_storage {
+                        Some(storage) => {
+                            if storage.mode == "multi" {
+                                "Full".to_string()
+                            } else if storage.mode == "single" {
+                                "Lite".to_string()
+                            } else if storage.mode == "chat" {
+                                "Chat".to_string()
+                            } else {
+                                "Full".to_string()
+                            }
+                        }
+                        _ => "Full".to_string(),
+                    }
+                ))
+                .alignment(ratatui::layout::Alignment::Right),
             )
             .title(
                 Title::from(vec![
@@ -1037,6 +1058,7 @@ impl Widget for &mut ChatHistoryWidget {
             let legend_text = vec![
                 "Ctrl+N: New session",
                 "Ctrl+C: Exit",
+                "Ctrl+M or /mode: Change mode",
                 "/session: Switch session",
                 "/feedback: Send feedback",
                 "/help: Show full help",
@@ -1117,8 +1139,11 @@ impl Widget for &mut DiffReviewWidget {
             .h_scroll_position
             .min(self.h_scroll_max.saturating_sub(area.width as usize - 2));
 
+        // Only extract the lines in frame to speed up rendering
+        // (otherwise Paragraph::render_text spends a bunch of time computing line lenghts for offscreen lines)
         let paragraph = Paragraph::new(
-            self.lines
+            (&self.lines[self.v_scroll_position
+                ..(self.v_scroll_position + area.height as usize).min(self.lines.len())])
                 .iter()
                 .map(OwnedLine::as_line)
                 .collect::<Vec<_>>(),
@@ -1131,7 +1156,7 @@ impl Widget for &mut DiffReviewWidget {
                 Span::styled("(press Esc to close) ", ratatui::style::Color::Yellow)
             },
         ]))
-        .scroll((self.v_scroll_position as u16, self.h_scroll_position as u16));
+        .scroll((0, self.h_scroll_position as u16));
 
         self.v_scroll_state = self
             .v_scroll_state
@@ -1373,6 +1398,7 @@ enum AppState {
     ReviewDiff(DiffReviewWidget),
     // Sort of a hacky way to feed state from the event input loop back up
     ChangeSession(api::ChatSession),
+    SwitchMode,
     ACI(ACIVizWidget),
     Exit,
 }
@@ -1383,6 +1409,9 @@ struct App {
 
     /// Chat is always present in the background so this is not kept in the state
     chat_history: ChatHistoryWidget,
+
+    /// File browser is kept on the left at all times so stored here
+    file_browser: FileTreeWidget,
 
     /// Current chatbox input
     input: tui_textarea::TextArea<'static>,
@@ -1395,8 +1424,15 @@ struct App {
     >,
     project: api::Project,
     feature: api::Feature,
-    session: api::ChatSession,
+    session: Arc<RwLock<api::ChatSession>>,
     state: Arc<Mutex<AppState>>,
+}
+
+fn is_in_area(mouse: &ratatui::crossterm::event::MouseEvent, area: Rect) -> bool {
+    mouse.column >= area.x
+        && mouse.column < area.x + area.width
+        && mouse.row >= area.y
+        && mouse.row < area.y + area.height
 }
 
 impl App {
@@ -1404,7 +1440,7 @@ impl App {
         repo_path: &Path,
         project: &api::Project,
         feature: &api::Feature,
-        session: &api::ChatSession,
+        session: Arc<RwLock<api::ChatSession>>,
         current_user: &api::User,
         sessions: Vec<api::ChatSession>,
         ws_stream: tokio_tungstenite::WebSocketStream<
@@ -1415,7 +1451,9 @@ impl App {
         let chat_history: Vec<ChatMessage> = client
             .get(&format!(
                 "/projects/{}/features/{}/chat/sessions/{}/list",
-                project.id, feature.id, session.id
+                project.id,
+                feature.id,
+                session.read().unwrap().id
             ))
             .send()
             .await?
@@ -1436,6 +1474,14 @@ impl App {
             .json()
             .await?;
 
+        let files = list_all_files(repo_path).unwrap();
+        let session_ref = session.read().unwrap();
+
+        trace!("NEW_APP_SESSION: {:?}", session_ref.pinned_files());
+        let file_browser = FileTreeWidget::new(files, session_ref.pinned_files());
+
+        // file_browser.pin_files(&session_ref.pinned_files());
+
         let mut x = Self {
             repo_path: repo_path.to_path_buf(),
             user: current_user.clone(),
@@ -1454,6 +1500,7 @@ impl App {
                     credits.plan_included - credits.plan_used + credits.purchased_remaining,
                 )),
             },
+            file_browser: file_browser,
             input: tui_textarea::TextArea::default(),
             client: client.clone(),
             ws_stream: Some(ws_stream),
@@ -1476,7 +1523,7 @@ impl App {
 
     async fn read_loop(
         read: &mut SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
-        write: &mpsc::Sender<tokio_tungstenite::tungstenite::Message>,
+        write: &mpsc::UnboundedSender<tokio_tungstenite::tungstenite::Message>,
         scrollback: Arc<Mutex<Vec<ChatMessage>>>,
         credit_remaining: Arc<Mutex<i32>>,
         repo_path: &Path,
@@ -1509,12 +1556,17 @@ impl App {
             };
 
             // Daneel snapshot resumption
-            {
-                let mut scrollback = scrollback.lock().unwrap();
-                if scrollback.len() == 0 {
-                    scrollback.push(ChatMessage::new(ChatMessageUser::AI, ""));
+            match data {
+                api::ws::Message::SwitchModeResponse => (),
+                api::ws::Message::PinFileResponse => (),
+                _ => {
+                    let mut scrollback = scrollback.lock().unwrap();
+                    if scrollback.len() == 0 {
+                        scrollback.push(ChatMessage::new(ChatMessageUser::AI, ""));
+                    }
                 }
             }
+
             trace!("Received message: {:#?}", data);
             match data {
                 api::ws::Message::Chat(api::ws::ChatMessage { message, .. }) => {
@@ -1673,7 +1725,7 @@ impl App {
                                 ))
                                 .unwrap(),
                             ))
-                            .await;
+                            .unwrap();
                     });
                 }
                 api::ws::Message::ACI(aci) => {
@@ -1850,7 +1902,6 @@ impl App {
                             serde_json::to_string(&api::ws::Message::FileRPCResponse(resp))
                                 .unwrap(),
                         ))
-                        .await
                         .unwrap();
                 }
                 api::ws::Message::Error(err) => {
@@ -1862,9 +1913,29 @@ impl App {
                         widget.usage = usage;
                     }
                 }
+                api::ws::Message::SwitchModeResponse => {
+                    let mut state = state.lock().unwrap();
+                    *state = AppState::SwitchMode;
+                }
                 _ => {}
             }
         }
+    }
+
+    fn calculate_layout(&self, frame_area: Rect, input_lines: usize) -> (Rect, Rect, Rect) {
+        let horizontal = ratatui::layout::Layout::horizontal([
+            ratatui::layout::Constraint::Percentage(20),
+            ratatui::layout::Constraint::Percentage(80),
+        ]);
+        let [file_browser_area, chat_area] = horizontal.areas(frame_area);
+
+        let vertical = ratatui::layout::Layout::vertical([
+            ratatui::layout::Constraint::Percentage(100),
+            ratatui::layout::Constraint::Min((input_lines.clamp(1, 3) + 2) as u16),
+        ]);
+        let [history_area, input_area] = vertical.areas(chat_area);
+
+        (file_browser_area, history_area, input_area)
     }
 
     async fn run(
@@ -1876,7 +1947,30 @@ impl App {
         let (mut write_sink, mut read) = self.ws_stream.take().unwrap().split();
         let (dead_tx, mut dead_rx) = tokio::sync::oneshot::channel();
 
-        let (write, mut write_source) = mpsc::channel(1);
+        let (write, mut write_source) = mpsc::unbounded_channel();
+
+        let write_arc = Arc::new(write.clone());
+        let write_arc_clone = write_arc.clone();
+
+        self.file_browser
+            .set_leaf_callback(move |path: &str, node: SimpleTreeNode| {
+                write_arc_clone
+                    .send(Message::Text(
+                        serde_json::to_string(&api::ws::Message::PinFile(
+                            api::ws::PinFileMessage {
+                                path: path.to_string(),
+                            },
+                        ))
+                        .unwrap(),
+                    ))
+                    .unwrap();
+
+                match node.style {
+                    TreeNodeStyle::Pinned => TreeNodeStyle::Default,
+                    _ => TreeNodeStyle::Pinned,
+                }
+            });
+
         tokio::spawn(async move {
             while let Some(msg) = write_source.recv().await {
                 write_sink.send(msg).await.unwrap();
@@ -1911,14 +2005,22 @@ impl App {
             if let AppState::ChangeSession(new_session) = state {
                 return Ok(Some(new_session));
             }
-            if let Ok(res) = dead_rx.try_recv() {
-                return res.map(|_| None);
+            if let AppState::SwitchMode = state {
+                let mut session_write_ref = self.session.write().unwrap();
+                session_write_ref.swap_mode();
+
+                let mut state = self.state.lock().unwrap();
+                *state = AppState::Chat;
             }
             if let AppState::TerminalReset = state {
                 terminal.clear()?;
                 let mut state = self.state.lock().unwrap();
                 *state = AppState::Chat;
                 continue;
+            }
+
+            if let Ok(res) = dead_rx.try_recv() {
+                return res.map(|_| None);
             }
 
             if last_draw.elapsed() > Duration::from_millis(40) {
@@ -1928,6 +2030,7 @@ impl App {
                         frame,
                         self.state.clone(),
                         &mut self.chat_history,
+                        &mut self.file_browser,
                         &self.input,
                     )
                 })?;
@@ -1946,6 +2049,8 @@ impl App {
                 AppState::ChangeSession(new_session) => {
                     return Ok(Some(new_session));
                 }
+                // Handled before event polling
+                AppState::SwitchMode => {}
                 AppState::ReviewDiff(diff) => match event::read()? {
                     Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
                         KeyCode::Char('y') if diff.can_apply => {
@@ -1954,6 +2059,11 @@ impl App {
                             let project = self.project.id;
                             let feature = self.feature.id;
                             let message_id = diff.msg_id;
+                            let paths = list_all_files(&self.repo_path).unwrap();
+                            let current_pinned =
+                                self.file_browser.pinned.clone().into_iter().collect();
+                            self.file_browser = FileTreeWidget::new(paths, current_pinned);
+
                             tokio::spawn(async move {
                                 let _ = client
                                     .post(&format!(
@@ -2132,73 +2242,96 @@ impl App {
                                     .send(Message::Text(serde_json::to_string(
                                         &api::ws::Message::KillGeneration,
                                     )?))
-                                    .await?;
+                                    .unwrap()
                             }
                         }
                     } else {
-                        match event::read()? {
-                            Event::Mouse(mouse) => match mouse.kind {
-                                event::MouseEventKind::ScrollUp => {
-                                    self.chat_history.scroll_position =
-                                        self.chat_history.scroll_position.saturating_sub(1);
-                                }
-                                event::MouseEventKind::ScrollDown => {
-                                    self.chat_history.scroll_position = self
-                                        .chat_history
-                                        .scroll_position
-                                        .saturating_add(1)
-                                        .clamp(0, self.chat_history.scroll_max);
-                                }
-                                event::MouseEventKind::Up(MouseButton::Left) => {
-                                    let mut messages = self.chat_history.messages.lock().unwrap();
+                        let next_event = event::read()?;
 
-                                    if let Ok(mut clipboard_ctx) =
-                                        copypasta::ClipboardContext::new()
-                                    {
-                                        for ((start, _end), block) in self
-                                            .chat_history
-                                            .message_hitboxes
-                                            .iter()
-                                            .zip(messages.iter())
-                                        {
-                                            // -1 for the border of chat history
-                                            if (*start as isize
-                                                - self.chat_history.scroll_position as isize)
-                                                == (mouse.row as isize) - 1
-                                                && (mouse.column as usize == 1
-                                                    || mouse.column as usize == 2)
-                                            {
-                                                clipboard_ctx
-                                                    .set_contents(block.raw.clone())
-                                                    .unwrap();
-                                            }
+                        match next_event {
+                            Event::Mouse(mouse) => {
+                                let terminal_rect = Rect::new(
+                                    0,
+                                    0,
+                                    terminal.size()?.width,
+                                    terminal.size()?.height,
+                                );
+                                let (fb_area, _, _) = self.calculate_layout(
+                                    terminal_rect,
+                                    (&self.input.lines().len().clamp(1, 3) + 2) as usize,
+                                );
+
+                                if is_in_area(&mouse, fb_area) {
+                                    self.file_browser.handle_event(&next_event, fb_area);
+                                } else {
+                                    match mouse.kind {
+                                        event::MouseEventKind::ScrollUp => {
+                                            self.chat_history.scroll_position =
+                                                self.chat_history.scroll_position.saturating_sub(1);
                                         }
-                                    }
+                                        event::MouseEventKind::ScrollDown => {
+                                            self.chat_history.scroll_position = self
+                                                .chat_history
+                                                .scroll_position
+                                                .saturating_add(1)
+                                                .clamp(0, self.chat_history.scroll_max);
+                                        }
+                                        event::MouseEventKind::Up(MouseButton::Left) => {
+                                            let mut messages =
+                                                self.chat_history.messages.lock().unwrap();
 
-                                    let mut hitboxes_iter =
-                                        self.chat_history.code_block_hitboxes.iter();
-                                    for msg in messages.iter_mut() {
-                                        for block in &mut msg.blocks {
-                                            if let MessageBlock::Code(code) = block {
-                                                let (start, end) = hitboxes_iter.next().unwrap();
-                                                // -1 for the border of chat history
-                                                if (*start as isize
-                                                    - self.chat_history.scroll_position as isize)
-                                                    < (mouse.row as isize)
-                                                    && (*end as isize
+                                            if let Ok(mut clipboard_ctx) =
+                                                copypasta::ClipboardContext::new()
+                                            {
+                                                for ((start, _end), block) in self
+                                                    .chat_history
+                                                    .message_hitboxes
+                                                    .iter()
+                                                    .zip(messages.iter())
+                                                {
+                                                    // -1 for the border of chat history
+                                                    if (*start as isize
                                                         - self.chat_history.scroll_position
                                                             as isize)
-                                                        > (mouse.row as isize) - 1
-                                                {
-                                                    code.folded = !code.folded;
-                                                    msg.block_line_cache.1.clear();
+                                                        == (mouse.row as isize) - 1
+                                                        && (mouse.column == fb_area.width + 1
+                                                            || mouse.column == fb_area.width + 2)
+                                                    {
+                                                        clipboard_ctx
+                                                            .set_contents(block.raw.clone())
+                                                            .unwrap();
+                                                    }
+                                                }
+                                            }
+
+                                            let mut hitboxes_iter =
+                                                self.chat_history.code_block_hitboxes.iter();
+                                            for msg in messages.iter_mut() {
+                                                for block in &mut msg.blocks {
+                                                    if let MessageBlock::Code(code) = block {
+                                                        let (start, end) =
+                                                            hitboxes_iter.next().unwrap();
+                                                        // -1 for the border of chat history
+                                                        if (*start as isize
+                                                            - self.chat_history.scroll_position
+                                                                as isize)
+                                                            < (mouse.row as isize)
+                                                            && (*end as isize
+                                                                - self.chat_history.scroll_position
+                                                                    as isize)
+                                                                > (mouse.row as isize) - 1
+                                                        {
+                                                            code.folded = !code.folded;
+                                                            msg.block_line_cache.1.clear();
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
+                                        _ => {}
                                     }
                                 }
-                                _ => {}
-                            },
+                            }
                             Event::Key(key) if key.kind == event::KeyEventKind::Press => {
                                 match key.code {
                                     KeyCode::Char('c')
@@ -2206,6 +2339,15 @@ impl App {
                                     {
                                         let mut state = self.state.lock().unwrap();
                                         *state = AppState::Exit;
+                                    }
+                                    KeyCode::Char('m')
+                                        if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
+                                    {
+                                        write
+                                            .send(Message::Text(serde_json::to_string(
+                                                &api::ws::Message::SwitchMode,
+                                            )?))
+                                            .unwrap();
                                     }
                                     KeyCode::Char('n')
                                         if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
@@ -2260,7 +2402,7 @@ impl App {
                                 .send(Message::Text(serde_json::to_string(
                                     &api::ws::Message::KillGeneration,
                                 )?))
-                                .await?;
+                                .unwrap();
                             let mut state = self.state.lock().unwrap();
                             *state = AppState::Chat;
                         }
@@ -2276,7 +2418,7 @@ impl App {
 
     async fn handle_chat_input(
         &mut self,
-        write: &mpsc::Sender<tokio_tungstenite::tungstenite::Message>,
+        write: &mpsc::UnboundedSender<tokio_tungstenite::tungstenite::Message>,
     ) -> Result<()> {
         if self.input.is_empty() {
             return Ok(());
@@ -2289,6 +2431,14 @@ impl App {
                     "/exit" | "/quit" => {
                         *state = AppState::Exit;
                     }
+                    "/mode" | "/m" => {
+                        write
+                            .send(Message::Text(serde_json::to_string(
+                                &api::ws::Message::SwitchMode,
+                            )?))
+                            .unwrap();
+                    }
+                    "/pin" => {}
                     "/help" => {
                         *state = AppState::Popup(
                             "Help".to_string(),
@@ -2338,7 +2488,9 @@ impl App {
                                 self.client
                                     .put(&format!(
                                         "/projects/{}/features/{}/chat/sessions/{}",
-                                        self.project.id, self.feature.id, self.session.id
+                                        self.project.id,
+                                        self.feature.id,
+                                        self.session.read().unwrap().id
                                     ))
                                     .json(&json!({ "name": name }))
                                     .send()
@@ -2510,7 +2662,7 @@ impl App {
                         request_type_analysis: false,
                     }),
                 )?))
-                .await?;
+                .unwrap();
         }
 
         self.clear_input();
@@ -2546,7 +2698,7 @@ pub async fn start_chat(
         ));
     }
 
-    let mut session = session.clone();
+    let mut session = Arc::new(RwLock::new(session.clone()));
     let mut terminal = terminal::init()?;
 
     let status = loop {
@@ -2557,7 +2709,7 @@ pub async fn start_chat(
             .send(Message::Text(serde_json::to_string(
                 &api::ws::Message::Auth(api::ws::AuthMessage {
                     feature_id: feature.id,
-                    session_id: session.id,
+                    session_id: session.read().unwrap().id,
                     token: client.token.clone(),
                 }),
             )?))
@@ -2569,7 +2721,7 @@ pub async fn start_chat(
             &repo_path,
             project,
             feature,
-            &session,
+            session,
             current_user,
             sessions.clone(),
             ws_stream,
@@ -2580,7 +2732,7 @@ pub async fn start_chat(
         let status = app.run(&mut terminal).await;
         match status {
             Ok(Some(new_session)) => {
-                session = new_session;
+                session = Arc::new(RwLock::new(new_session));
                 continue;
             }
             Ok(None) => {
@@ -2601,6 +2753,7 @@ fn ui(
     frame: &mut ratatui::Frame,
     state: Arc<Mutex<AppState>>,
     chat_history: &mut ChatHistoryWidget,
+    file_browser: &mut FileTreeWidget,
     input: &tui_textarea::TextArea,
 ) {
     let _ = match &*state.lock().unwrap() {
@@ -2612,14 +2765,23 @@ fn ui(
         }
     };
 
+    // First split into columns - left for file browser, right for chat
+    let horizontal = ratatui::layout::Layout::horizontal([
+        ratatui::layout::Constraint::Percentage(20), // file browser width, adjust as needed
+        ratatui::layout::Constraint::Percentage(80), // chat area width
+    ]);
+    let [file_browser_area, chat_area] = horizontal.areas(frame.area());
+
+    // Then split the chat area vertically like you already had
     let vertical = ratatui::layout::Layout::vertical([
         ratatui::layout::Constraint::Percentage(100),
         ratatui::layout::Constraint::Min((input.lines().len().clamp(1, 3) + 2) as u16),
     ]);
-    let [history_area, input_area] = vertical.areas(frame.area());
+    let [history_area, input_area] = vertical.areas(chat_area); // Note: using chat_area instead of frame.area()
 
+    // Render everything
+    frame.render_widget(file_browser, file_browser_area);
     frame.render_widget(chat_history, history_area);
-
     frame.render_widget(input, input_area);
 
     let mut state = state.lock().unwrap();

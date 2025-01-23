@@ -55,9 +55,6 @@ impl FromStr for FeatureRef {
 }
 
 impl FeatureRef {
-    pub fn as_str(&self) -> &str {
-        &self.feature
-    }
     pub fn split(&self) -> (IdOrName, IdOrName) {
         let parts: Vec<&str> = self.feature.splitn(2, '/').collect();
         if parts.len() != 2 {

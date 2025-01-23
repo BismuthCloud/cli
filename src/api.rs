@@ -1,5 +1,6 @@
 use std::fmt::Display;
 
+use log::trace;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -35,10 +36,6 @@ impl Display for Organization {
 pub struct Feature {
     pub id: u64,
     pub name: String,
-}
-
-fn default_true() -> bool {
-    return true;
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -132,11 +129,77 @@ impl Display for GitHubAppInstall {
     }
 }
 
+fn default_mode() -> String {
+    "multi".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SessionMode {
+    MultiTurn,
+    SingleTurn,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ContextStorage {
+    #[serde(default)]
+    pub pinned_files: Vec<String>,
+    #[serde(default = "default_mode")]
+    pub mode: String,
+}
+
+impl<'de> Deserialize<'de> for ContextStorage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Helper {
+            #[serde(default = "default_mode")]
+            mode: String,
+            #[serde(default)]
+            pinned_files: Vec<String>,
+        }
+
+        let value = serde_json::Value::deserialize(deserializer)?;
+
+        match value {
+            serde_json::Value::String(s) => {
+                trace!("WTF STRING: {:?}", s);
+
+                if s == "null" {
+                    Ok(ContextStorage {
+                        mode: "multi".to_string(),
+                        pinned_files: vec![],
+                    })
+                } else {
+                    let helper: Helper =
+                        serde_json::from_str(&s).map_err(serde::de::Error::custom)?;
+                    Ok(ContextStorage {
+                        mode: helper.mode,
+                        pinned_files: helper.pinned_files,
+                    })
+                }
+            }
+            value => {
+                trace!("WTF: {:?}", value);
+                let helper: Helper =
+                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+                Ok(ContextStorage {
+                    mode: helper.mode,
+                    pinned_files: helper.pinned_files,
+                })
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChatSession {
     pub id: u64,
     #[serde(rename = "name")]
     pub _name: Option<String>,
+    #[serde(rename = "context_storage")]
+    pub _context_storage: Option<ContextStorage>,
 }
 
 impl ChatSession {
@@ -144,6 +207,35 @@ impl ChatSession {
         match &self._name {
             Some(name) => name.clone(),
             None => format!("session-{}", self.id),
+        }
+    }
+
+    pub fn pinned_files(&self) -> Vec<String> {
+        match self._context_storage.clone() {
+            Some(storage) => storage.pinned_files,
+            _ => vec![],
+        }
+    }
+
+    pub fn swap_mode(&mut self) {
+        match self._context_storage.clone() {
+            Some(mut storage) => {
+                storage.mode = match storage.mode.as_str() {
+                    "single" => "chat",
+                    "multi" => "single",
+                    "chat" => "multi",
+                    _ => "single",
+                }
+                .to_string();
+
+                self._context_storage = Some(storage);
+            }
+            _ => {
+                self._context_storage = Some(ContextStorage {
+                    pinned_files: vec![],
+                    mode: "single".to_string(),
+                });
+            }
         }
     }
 }
@@ -260,6 +352,11 @@ pub mod ws {
         pub command: String,
     }
 
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    pub struct PinFileMessage {
+        pub path: String,
+    }
+
     #[derive(Debug, Serialize)]
     pub struct RunCommandResponse {
         pub exit_code: i32,
@@ -349,6 +446,10 @@ pub mod ws {
         KillGeneration,
         Error(String),
         Usage(u64),
+        SwitchMode,
+        SwitchModeResponse,
+        PinFile(PinFileMessage),
+        PinFileResponse,
     }
 
     impl Serialize for Message {
@@ -357,6 +458,27 @@ pub mod ws {
             S: serde::Serializer,
         {
             match *self {
+                Message::SwitchMode => {
+                    let mut state = serializer.serialize_struct("Message", 1)?;
+                    state.serialize_field("type", "SWITCH_MODE")?;
+                    state.end()
+                }
+                Message::SwitchModeResponse => {
+                    let mut state = serializer.serialize_struct("Message", 1)?;
+                    state.serialize_field("type", "SWITCH_MODE_RESPONSE")?;
+                    state.end()
+                }
+                Message::PinFileResponse => {
+                    let mut state = serializer.serialize_struct("Message", 1)?;
+                    state.serialize_field("type", "PIN_FILE_RESPONSE")?;
+                    state.end()
+                }
+                Message::PinFile(ref pin) => {
+                    let mut state = serializer.serialize_struct("Message", 2)?;
+                    state.serialize_field("type", "PIN_FILE")?;
+                    state.serialize_field("pin", pin)?;
+                    state.end()
+                }
                 Message::Auth(ref auth) => {
                     let mut state = serializer.serialize_struct("Message", 2)?;
                     state.serialize_field("type", "AUTH")?;
@@ -427,6 +549,8 @@ pub mod ws {
                     .map_err(serde::de::Error::custom)?;
                     Ok(Message::ResponseState(state))
                 }
+                Some("SWITCH_MODE_RESPONSE") => Ok(Message::SwitchModeResponse),
+                Some("PIN_FILE_RESPONSE") => Ok(Message::PinFileResponse),
                 Some("RUN_COMMAND") => {
                     let command = serde_json::from_value(
                         value
