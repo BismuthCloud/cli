@@ -1137,8 +1137,10 @@ impl Widget for &mut DiffReviewWidget {
             .h_scroll_position
             .min(self.h_scroll_max.saturating_sub(area.width as usize));
 
+        // Only extract the lines in frame to speed up rendering
+        // (otherwise Paragraph::render_text spends a bunch of time computing line lenghts for offscreen lines)
         let paragraph = Paragraph::new(
-            self.lines
+            (&self.lines[self.v_scroll_position..self.v_scroll_position + area.height as usize])
                 .iter()
                 .map(OwnedLine::as_line)
                 .collect::<Vec<_>>(),
@@ -1151,7 +1153,7 @@ impl Widget for &mut DiffReviewWidget {
                 Span::styled("(press Esc to close) ", ratatui::style::Color::Yellow)
             },
         ]))
-        .scroll((self.v_scroll_position as u16, self.h_scroll_position as u16));
+        .scroll((0, self.h_scroll_position as u16));
 
         self.v_scroll_state = self
             .v_scroll_state
