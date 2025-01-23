@@ -1140,7 +1140,8 @@ impl Widget for &mut DiffReviewWidget {
         // Only extract the lines in frame to speed up rendering
         // (otherwise Paragraph::render_text spends a bunch of time computing line lenghts for offscreen lines)
         let paragraph = Paragraph::new(
-            (&self.lines[self.v_scroll_position..self.v_scroll_position + area.height as usize])
+            (&self.lines[self.v_scroll_position
+                ..(self.v_scroll_position + area.height as usize).min(self.lines.len())])
                 .iter()
                 .map(OwnedLine::as_line)
                 .collect::<Vec<_>>(),
