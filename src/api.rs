@@ -194,12 +194,34 @@ impl<'de> Deserialize<'de> for ContextStorage {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Model {
+    Gpt35Turbo,
+    Gpt4,
+    Claude,
+    ClaudeInstant,
+}
+
+impl Default for Model {
+    fn default() -> Self {
+        Model::Gpt35Turbo
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ModelList {
+    pub models: Vec<Model>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChatSession {
     pub id: u64,
     #[serde(rename = "name")]
     pub _name: Option<String>,
     #[serde(rename = "context_storage")]
     pub _context_storage: Option<ContextStorage>,
+    #[serde(default)]
+    pub model: Model,
 }
 
 impl ChatSession {
@@ -272,13 +294,15 @@ pub struct CreditUsage {
 pub mod ws {
     use serde::{ser::SerializeStruct, Deserialize, Serialize};
 
-    #[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
     #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
     pub enum MessageType {
         Auth,
         Ping,
         Chat,
         ResponseState,
+        Model,
+        ModelList,
     }
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -432,7 +456,7 @@ pub mod ws {
         End,
     }
 
-    #[derive(Debug)]
+#[derive(Debug)]
     pub enum Message {
         Auth(AuthMessage),
         Ping,
@@ -450,6 +474,8 @@ pub mod ws {
         SwitchModeResponse,
         PinFile(PinFileMessage),
         PinFileResponse,
+        Model(Model),
+        ModelList(ModelList),
     }
 
     impl Serialize for Message {
@@ -513,6 +539,18 @@ pub mod ws {
                     state.serialize_field("file_rpc_response", response)?;
                     state.end()
                 }
+                Message::Model(ref model) => {
+                    let mut state = serializer.serialize_struct("Message", 2)?;
+                    state.serialize_field("type", "MODEL")?;
+                    state.serialize_field("model", model)?;
+                    state.end()
+                }
+                Message::ModelList(ref list) => {
+                    let mut state = serializer.serialize_struct("Message", 2)?;
+                    state.serialize_field("type", "MODEL_LIST")?;
+                    state.serialize_field("model_list", list)?;
+                    state.end()
+                }
                 // ResponseState is one-way, no need to serialize
                 _ => unimplemented!(),
             }
@@ -560,6 +598,27 @@ pub mod ws {
                     )
                     .map_err(serde::de::Error::custom)?;
                     Ok(Message::RunCommand(command))
+                }
+                Some("MODEL") => {
+                    let model = serde_json::from_value(
+                        value
+                            .get("model")
+                            .ok_or(serde::de::Error::custom("missing inner model"))?
+                            .clone(),
+                    )
+                    .map_err(serde::de::Error::custom)?;
+                    Ok(Message::Model(model))
+                }
+                Some("MODEL_LIST") => {
+                    let list = serde_json::from_value(
+                        value
+                            .get("model_list")
+                            .ok_or(serde::de::Error::custom("missing inner model list"))?
+                            .clone(),
+                    )
+                    .map_err(serde::de::Error::custom)?;
+                    Ok(Message::ModelList(list))
+                }
                 }
                 Some("ACI") => {
                     let aci = serde_json::from_value(

@@ -599,7 +599,7 @@ impl CodeBlock {
                             // Necessary so empty lines don't get double rendered
                             (if line != "\n" {
                                 vec![if diff_highlight_lines.contains(&line_no) {
-                                    ("█", Style::default().fg(ratatui::style::Color::Green))
+                                    ("#", Style::default().fg(ratatui::style::Color::Green))
                                 } else {
                                     (" ", Style::default())
                                 }]
@@ -716,7 +716,7 @@ impl ChatMessage {
         let mut spans = Vec::with_capacity(3);
         // Copy
         if copypasta::ClipboardContext::new().is_ok() {
-            spans.push(("⎘ ", ratatui::style::Style::default()));
+            spans.push(("[?] ", ratatui::style::Style::default()));
         }
         spans.push(match user {
             ChatMessageUser::AI => (
@@ -866,7 +866,7 @@ impl Widget for &mut ChatHistoryWidget {
             )
             .title(
                 Title::from(format!(
-                    " Mode: {} ",
+                    " Mode: {} | Model: {} ",
                     match &self.session.read().unwrap()._context_storage {
                         Some(storage) => {
                             if storage.mode == "multi" {
@@ -880,6 +880,12 @@ impl Widget for &mut ChatHistoryWidget {
                             }
                         }
                         _ => "Full".to_string(),
+                    },
+                    match &self.session.read().unwrap().model {
+                        api::Model::Gpt35Turbo => "GPT-3.5",
+                        api::Model::Gpt4 => "GPT-4",
+                        api::Model::Claude => "Claude",
+                        api::Model::ClaudeInstant => "Claude Instant",
                     }
                 ))
                 .alignment(ratatui::layout::Alignment::Right),
@@ -931,7 +937,7 @@ impl Widget for &mut ChatHistoryWidget {
                                             as usize
                                             / 251]
                                     } else {
-                                        '✓'
+                                        ''
                                     };
                                     vec![Line::styled(
                                         format!("  {} {}", detail, indicator),
@@ -964,7 +970,7 @@ impl Widget for &mut ChatHistoryWidget {
                                             .iter()
                                             .map(|line| {
                                                 let mut indented = line.as_line();
-                                                indented.spans.insert(0, "│ ".into());
+                                                indented.spans.insert(0, "| ".into());
                                                 indented
                                             })
                                             .collect()
@@ -1334,7 +1340,7 @@ impl Widget for &mut ACIVizWidget {
                 .collect::<Vec<_>>();
             let test_len = test_output.len();
             let test_paragraph = Paragraph::new(test_output)
-                .block(Block::new().borders(Borders::TOP).title("─ Test Output "))
+                .block(Block::new().borders(Borders::TOP).title("- Test Output "))
                 .scroll((test_len.saturating_sub(test_area.height as usize) as u16, 0))
                 .wrap(ratatui::widgets::Wrap { trim: false });
 
@@ -1366,7 +1372,7 @@ impl Widget for &mut ACIVizWidget {
                 .block(
                     Block::new()
                         .borders(Borders::TOP)
-                        .title("─ Command Output "),
+                        .title("- Command Output "),
                 )
                 .scroll((test_len.saturating_sub(test_area.height as usize) as u16, 0))
                 .wrap(ratatui::widgets::Wrap { trim: false });
@@ -1389,11 +1395,64 @@ impl Widget for &mut ACIVizWidget {
     }
 }
 
+#[derive(Clone)]
+struct ModelSelector {
+    models: api::ModelList,
+    selected_idx: usize,
+    v_scroll_position: usize,
+}
+
+impl Widget for &mut ModelSelector {
+    fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
+        let mut lines = vec![];
+        for (idx, model) in self.models.models.iter().enumerate() {
+            let name = match model {
+                api::Model::Gpt35Turbo => "GPT-3.5",
+                api::Model::Gpt4 => "GPT-4", 
+                api::Model::Claude => "Claude",
+                api::Model::ClaudeInstant => "Claude Instant",
+            };
+            let mut line = Line::raw(name);
+            if idx == self.selected_idx {
+                line = line.style(Style::default().bg(ratatui::style::Color::Blue));
+            }
+            lines.push(line);
+        }
+        let paragraph = Paragraph::new(lines)
+            .block(
+                Block::bordered()
+                    .title(" Select Model ")
+                    .padding(Padding::new(1, 0, 0, 0)),
+            )
+            .scroll((self.v_scroll_position as u16, 0));
+
+        if self.selected_idx >= (area.height - 2) as usize + self.v_scroll_position {
+            self.v_scroll_position = self.selected_idx - (area.height - 2) as usize + 1;
+        } else if self.selected_idx < self.v_scroll_position {
+            self.v_scroll_position = self.selected_idx;
+        }
+        let mut v_scroll_state = ScrollbarState::default()
+            .content_length(self.models.models.len().saturating_sub(area.height as usize - 2))
+            .position(self.v_scroll_position);
+
+        let area = centered_paragraph(&paragraph, area);
+        Clear.render(area, buf);
+        paragraph.render(area, buf);
+        StatefulWidget::render(
+            Scrollbar::new(ratatui::widgets::ScrollbarOrientation::VerticalRight),
+            area,
+            buf,
+            &mut v_scroll_state,
+        );
+    }
+}
+
 #[derive(Clone, Debug)]
 enum AppState {
     Chat,
     TerminalReset,
     SelectSession(SelectSessionWidget),
+    SelectModel(ModelSelector),
     Popup(String, String),
     ReviewDiff(DiffReviewWidget),
     // Sort of a hacky way to feed state from the event input loop back up
@@ -1917,6 +1976,13 @@ impl App {
                     let mut state = state.lock().unwrap();
                     *state = AppState::SwitchMode;
                 }
+                api::ws::Message::Model(model) => {
+                    let mut session = self.session.write().unwrap();
+                    session.model = model;
+                }
+                api::ws::Message::ModelList(_) => {
+                    // Just ignore the model list response - UI will handle displaying it
+                }
                 _ => {}
             }
         }
@@ -2412,6 +2478,41 @@ impl App {
                 },
                 // Handled before event polling
                 AppState::TerminalReset => {}
+                AppState::SelectModel(models) => match event::read()? {
+                    Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
+                        KeyCode::Up => {
+                            let mut state = self.state.lock().unwrap();
+                            if let AppState::SelectModel(widget) = &mut *state {
+                                widget.selected_idx = widget.selected_idx.saturating_sub(1);
+                            }
+                        }
+                        KeyCode::Down => {
+                            let mut state = self.state.lock().unwrap();
+                            if let AppState::SelectModel(widget) = &mut *state {
+                                widget.selected_idx = widget
+                                    .selected_idx
+                                    .saturating_add(1)
+                                    .clamp(0, widget.models.len() - 1);
+                            }
+                        }
+                        KeyCode::Esc => {
+                            let mut state = self.state.lock().unwrap();
+                            *state = AppState::Chat;
+                        }
+                        KeyCode::Enter => {
+                            let model = models.models[models.selected_idx].clone();
+                            write
+                                .send(Message::Text(serde_json::to_string(
+                                    &api::ws::Message::Model(model),
+                                )?))
+                                .unwrap();
+                            let mut state = self.state.lock().unwrap();
+                            *state = AppState::Chat;
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                },
             }
         }
     }
@@ -2439,6 +2540,21 @@ impl App {
                             .unwrap();
                     }
                     "/pin" => {}
+                    "/model" => {
+                        write
+                            .send(Message::Text(serde_json::to_string(
+                                &api::ws::Message::ModelList(api::ModelList {
+                                    models: vec![
+                                        api::Model::Gpt35Turbo,
+                                        api::Model::Gpt4,
+                                        api::Model::Claude,
+                                        api::Model::ClaudeInstant,
+                                    ],
+                                }),
+                            )?))
+                            .unwrap();
+                        *state = AppState::SelectModel;
+                    }
                     "/help" => {
                         *state = AppState::Popup(
                             "Help".to_string(),
