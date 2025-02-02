@@ -144,6 +144,8 @@ pub struct ContextStorage {
     pub pinned_files: Vec<String>,
     #[serde(default = "default_mode")]
     pub mode: String,
+    #[serde(default = "default_model")]
+    pub model: String,
 }
 
 impl<'de> Deserialize<'de> for ContextStorage {
@@ -157,6 +159,8 @@ impl<'de> Deserialize<'de> for ContextStorage {
             mode: String,
             #[serde(default)]
             pinned_files: Vec<String>,
+            #[serde(default = "default_model")]
+            model: String,
         }
 
         let value = serde_json::Value::deserialize(deserializer)?;
@@ -167,6 +171,7 @@ impl<'de> Deserialize<'de> for ContextStorage {
                     Ok(ContextStorage {
                         mode: "single".to_string(),
                         pinned_files: vec![],
+                        model: "auto".to_string(),
                     })
                 } else {
                     let helper: Helper =
@@ -174,6 +179,7 @@ impl<'de> Deserialize<'de> for ContextStorage {
                     Ok(ContextStorage {
                         mode: helper.mode,
                         pinned_files: helper.pinned_files,
+                        model: helper.model,
                     })
                 }
             }
@@ -184,6 +190,7 @@ impl<'de> Deserialize<'de> for ContextStorage {
                 Ok(ContextStorage {
                     mode: helper.mode,
                     pinned_files: helper.pinned_files,
+                    model: helper.model,
                 })
             }
         }
@@ -205,9 +212,13 @@ impl Default for Model {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ModelList {
-    pub models: Vec<Model>,
+    pub models: Vec<String>,
+}
+
+pub fn default_model() -> String {
+    "auto".to_string()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -217,8 +228,6 @@ pub struct ChatSession {
     pub _name: Option<String>,
     #[serde(rename = "context_storage")]
     pub _context_storage: Option<ContextStorage>,
-    #[serde(default)]
-    pub model: Model,
 }
 
 impl ChatSession {
@@ -233,6 +242,22 @@ impl ChatSession {
         match self._context_storage.clone() {
             Some(storage) => storage.pinned_files,
             _ => vec![],
+        }
+    }
+
+    pub fn swap_model(&mut self, model: String) {
+        match self._context_storage.clone() {
+            Some(mut storage) => {
+                storage.model = model;
+                self._context_storage = Some(storage);
+            }
+            _ => {
+                self._context_storage = Some(ContextStorage {
+                    pinned_files: vec![],
+                    mode: "multi".to_string(),
+                    model: model,
+                });
+            }
         }
     }
 
@@ -252,6 +277,7 @@ impl ChatSession {
                 self._context_storage = Some(ContextStorage {
                     pinned_files: vec![],
                     mode: "single".to_string(),
+                    model: "auto".to_string(),
                 });
             }
         }
@@ -288,9 +314,10 @@ pub struct CreditUsage {
 }
 
 pub mod ws {
+    use crate::api::{Model, ModelList};
     use serde::{ser::SerializeStruct, Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize)]
+    #[derive(Debug, Serialize, Deserialize)]
     #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
     pub enum MessageType {
         Auth,
@@ -377,6 +404,11 @@ pub mod ws {
         pub path: String,
     }
 
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    pub struct SwitchModelResponseMessage {
+        pub model: String,
+    }
+
     #[derive(Debug, Serialize)]
     pub struct RunCommandResponse {
         pub exit_code: i32,
@@ -452,7 +484,7 @@ pub mod ws {
         End,
     }
 
-#[derive(Debug)]
+    #[derive(Debug)]
     pub enum Message {
         Auth(AuthMessage),
         Ping,
@@ -470,8 +502,8 @@ pub mod ws {
         SwitchModeResponse,
         PinFile(PinFileMessage),
         PinFileResponse,
-        Model(Model),
-        ModelList(ModelList),
+        SwitchModel(String),
+        SwitchModelResponse(SwitchModelResponseMessage),
     }
 
     impl Serialize for Message {
@@ -535,16 +567,16 @@ pub mod ws {
                     state.serialize_field("file_rpc_response", response)?;
                     state.end()
                 }
-                Message::Model(ref model) => {
+                Message::SwitchModel(ref model) => {
                     let mut state = serializer.serialize_struct("Message", 2)?;
-                    state.serialize_field("type", "MODEL")?;
+                    state.serialize_field("type", "SWITCH_MODEL")?;
                     state.serialize_field("model", model)?;
                     state.end()
                 }
-                Message::ModelList(ref list) => {
+                Message::SwitchModelResponse(ref response) => {
                     let mut state = serializer.serialize_struct("Message", 2)?;
-                    state.serialize_field("type", "MODEL_LIST")?;
-                    state.serialize_field("model_list", list)?;
+                    state.serialize_field("type", "SWITCH_MODEL_RESPONSE")?;
+                    state.serialize_field("switchModelResponse", response)?;
                     state.end()
                 }
                 // ResponseState is one-way, no need to serialize
@@ -584,6 +616,17 @@ pub mod ws {
                     Ok(Message::ResponseState(state))
                 }
                 Some("SWITCH_MODE_RESPONSE") => Ok(Message::SwitchModeResponse),
+                Some("SWITCH_MODEL_RESPONSE") => {
+                    let response = serde_json::from_value(
+                        value
+                            .get("switchModelResponse")
+                            .ok_or(serde::de::Error::custom("missing inner response state"))?
+                            .clone(),
+                    )
+                    .map_err(serde::de::Error::custom)?;
+
+                    Ok(Message::SwitchModelResponse(response))
+                }
                 Some("PIN_FILE_RESPONSE") => Ok(Message::PinFileResponse),
                 Some("RUN_COMMAND") => {
                     let command = serde_json::from_value(
@@ -595,7 +638,7 @@ pub mod ws {
                     .map_err(serde::de::Error::custom)?;
                     Ok(Message::RunCommand(command))
                 }
-                Some("MODEL") => {
+                Some("SWITCH_MODEL") => {
                     let model = serde_json::from_value(
                         value
                             .get("model")
@@ -603,18 +646,7 @@ pub mod ws {
                             .clone(),
                     )
                     .map_err(serde::de::Error::custom)?;
-                    Ok(Message::Model(model))
-                }
-                Some("MODEL_LIST") => {
-                    let list = serde_json::from_value(
-                        value
-                            .get("model_list")
-                            .ok_or(serde::de::Error::custom("missing inner model list"))?
-                            .clone(),
-                    )
-                    .map_err(serde::de::Error::custom)?;
-                    Ok(Message::ModelList(list))
-                }
+                    Ok(Message::SwitchModel(model))
                 }
                 Some("ACI") => {
                     let aci = serde_json::from_value(

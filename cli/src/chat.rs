@@ -18,7 +18,7 @@ use ratatui::{
         event::{self, Event, KeyCode, MouseButton},
     },
     layout::{Constraint, Layout, Margin, Rect},
-    style::Style,
+    style::{Style, Stylize},
     text::{Line, Span},
     widgets::{
         block::Title, Block, Borders, Clear, Padding, Paragraph, Scrollbar, ScrollbarState,
@@ -38,6 +38,7 @@ use crate::{
     api::{
         self,
         ws::{ChatModifiedFile, RunCommandResponse},
+        Model, ModelList,
     },
     tree::{FileTreeWidget, TreeNodeStyle},
     APIClient, ResponseErrorExt as _,
@@ -707,7 +708,7 @@ impl ChatMessage {
         let mut spans = Vec::with_capacity(3);
         // Copy
         if copypasta::ClipboardContext::new().is_ok() {
-            spans.push(("[?] ", ratatui::style::Style::default()));
+            spans.push(("[copy] ", ratatui::style::Color::Blue.into()));
         }
         spans.push(match user {
             ChatMessageUser::AI => (
@@ -868,11 +869,9 @@ impl Widget for &mut ChatHistoryWidget {
                         }
                         _ => "Lite".to_string(),
                     },
-                    match &self.session.read().unwrap().model {
-                        api::Model::Gpt35Turbo => "GPT-3.5",
-                        api::Model::Gpt4 => "GPT-4",
-                        api::Model::Claude => "Claude",
-                        api::Model::ClaudeInstant => "Claude Instant",
+                    match &self.session.read().unwrap()._context_storage {
+                        Some(storage) => storage.model.clone(),
+                        _ => "auto".to_string(),
                     }
                 ))
                 .alignment(ratatui::layout::Alignment::Right),
@@ -910,7 +909,7 @@ impl Widget for &mut ChatHistoryWidget {
                                             as usize
                                             / 251]
                                     } else {
-                                        ''
+                                        '✓'
                                     };
                                     vec![Line::styled(
                                         format!("  {} {}", detail, indicator),
@@ -1040,6 +1039,7 @@ impl Widget for &mut ChatHistoryWidget {
                 "Ctrl+M or /mode: Change mode",
                 "/session: Switch session",
                 "/feedback: Send feedback",
+                "/model: Change model",
                 "/help: Show full help",
             ];
             let legend_height = legend_text.len() as u16;
@@ -1371,23 +1371,18 @@ impl Widget for &mut ACIVizWidget {
     }
 }
 
-#[derive(Clone)]
-struct ModelSelector {
-    models: api::ModelList,
+#[derive(Clone, Debug)]
+struct ModelSelectorWidget {
+    models: Vec<String>,
     selected_idx: usize,
     v_scroll_position: usize,
 }
 
-impl Widget for &mut ModelSelector {
+impl Widget for &mut ModelSelectorWidget {
     fn render(self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
         let mut lines = vec![];
-        for (idx, model) in self.models.models.iter().enumerate() {
-            let name = match model {
-                api::Model::Gpt35Turbo => "GPT-3.5",
-                api::Model::Gpt4 => "GPT-4", 
-                api::Model::Claude => "Claude",
-                api::Model::ClaudeInstant => "Claude Instant",
-            };
+        for (idx, model) in self.models.iter().enumerate() {
+            let name = model;
             let mut line = Line::raw(name);
             if idx == self.selected_idx {
                 line = line.style(Style::default().bg(ratatui::style::Color::Blue));
@@ -1408,7 +1403,7 @@ impl Widget for &mut ModelSelector {
             self.v_scroll_position = self.selected_idx;
         }
         let mut v_scroll_state = ScrollbarState::default()
-            .content_length(self.models.models.len().saturating_sub(area.height as usize - 2))
+            .content_length(self.models.len().saturating_sub(area.height as usize - 2))
             .position(self.v_scroll_position);
 
         let area = centered_paragraph(&paragraph, area);
@@ -1428,12 +1423,13 @@ enum AppState {
     Chat,
     TerminalReset,
     SelectSession(SelectSessionWidget),
-    SelectModel(ModelSelector),
+    SelectModel(ModelSelectorWidget),
     Popup(String, String),
     ReviewDiff(DiffReviewWidget),
     // Sort of a hacky way to feed state from the event input loop back up
     ChangeSession(api::ChatSession),
     SwitchMode,
+    SwitchModel(String),
     ACI(ACIVizWidget),
     Exit,
 }
@@ -1452,6 +1448,7 @@ struct App {
     input: tui_textarea::TextArea<'static>,
 
     client: APIClient,
+    daneel_client: APIClient,
     ws_stream: Option<
         tokio_tungstenite::WebSocketStream<
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -1482,6 +1479,7 @@ impl App {
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
         client: &APIClient,
+        daneel_client: &APIClient,
     ) -> Result<Self> {
         let chat_history: Vec<ChatMessage> = client
             .get(&format!(
@@ -1526,6 +1524,7 @@ impl App {
             file_browser: file_browser,
             input: tui_textarea::TextArea::default(),
             client: client.clone(),
+            daneel_client: daneel_client.clone(),
             ws_stream: Some(ws_stream),
             project: project.clone(),
             feature: feature.clone(),
@@ -1580,6 +1579,7 @@ impl App {
             // Daneel snapshot resumption
             match data {
                 api::ws::Message::SwitchModeResponse => (),
+                api::ws::Message::SwitchModelResponse(_) => (),
                 api::ws::Message::PinFileResponse => (),
                 _ => {
                     let mut scrollback = scrollback.lock().unwrap();
@@ -1934,12 +1934,13 @@ impl App {
                     let mut state = state.lock().unwrap();
                     *state = AppState::SwitchMode;
                 }
-                api::ws::Message::Model(model) => {
-                    let mut session = self.session.write().unwrap();
-                    session.model = model;
+                api::ws::Message::SwitchModelResponse(response) => {
+                    let mut state = state.lock().unwrap();
+                    *state = AppState::SwitchModel(response.model);
                 }
-                api::ws::Message::ModelList(_) => {
-                    // Just ignore the model list response - UI will handle displaying it
+                api::ws::Message::SwitchModel(model) => {
+                    let mut state = state.lock().unwrap();
+                    *state = AppState::SwitchModel(model);
                 }
                 _ => {}
             }
@@ -2028,6 +2029,16 @@ impl App {
                 let mut state = self.state.lock().unwrap();
                 *state = AppState::Chat;
             }
+
+            if let AppState::SwitchModel(model) = state.clone() {
+                let mut session_write_ref = self.session.write().unwrap();
+                trace!("Switching model to {}", model);
+                session_write_ref.swap_model(model);
+
+                let mut state = self.state.lock().unwrap();
+                *state = AppState::Chat;
+            }
+
             if let AppState::TerminalReset = state {
                 terminal.clear()?;
                 let mut state = self.state.lock().unwrap();
@@ -2067,6 +2078,8 @@ impl App {
                 }
                 // Handled before event polling
                 AppState::SwitchMode => {}
+                // Also Handled before event polling
+                AppState::SwitchModel(_) => {}
                 AppState::ReviewDiff(diff) => match event::read()? {
                     Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
                         KeyCode::Char('y') if diff.can_apply => {
@@ -2453,7 +2466,7 @@ impl App {
                             let model = models.models[models.selected_idx].clone();
                             write
                                 .send(Message::Text(serde_json::to_string(
-                                    &api::ws::Message::Model(model),
+                                    &api::ws::Message::SwitchModel(model),
                                 )?))
                                 .unwrap();
                             let mut state = self.state.lock().unwrap();
@@ -2491,19 +2504,21 @@ impl App {
                     }
                     "/pin" => {}
                     "/model" => {
-                        write
-                            .send(Message::Text(serde_json::to_string(
-                                &api::ws::Message::ModelList(api::ModelList {
-                                    models: vec![
-                                        api::Model::Gpt35Turbo,
-                                        api::Model::Gpt4,
-                                        api::Model::Claude,
-                                        api::Model::ClaudeInstant,
-                                    ],
-                                }),
-                            )?))
-                            .unwrap();
-                        *state = AppState::SelectModel;
+                        let models = self
+                            .daneel_client
+                            .get("/api/list_available_models")
+                            .send()
+                            .await?
+                            .error_body_for_status()
+                            .await?
+                            .json()
+                            .await?;
+
+                        *state = AppState::SelectModel(ModelSelectorWidget {
+                            models,
+                            selected_idx: 0,
+                            v_scroll_position: 0,
+                        });
                     }
                     "/help" => {
                         *state = AppState::Popup(
@@ -2733,6 +2748,7 @@ pub async fn start_chat(
     repo_path: &Path,
     client: &APIClient,
     daneel_url: &str,
+    daneel_client: &APIClient,
 ) -> Result<()> {
     let repo_path = repo_path.to_path_buf();
 
@@ -2779,6 +2795,7 @@ pub async fn start_chat(
             sessions.clone(),
             ws_stream,
             client,
+            daneel_client,
         )
         .await?;
 
@@ -2852,6 +2869,9 @@ fn ui(
             frame.render_widget(paragraph, area);
         }
         AppState::SelectSession(widget) => {
+            frame.render_widget(widget, frame.area());
+        }
+        AppState::SelectModel(widget) => {
             frame.render_widget(widget, frame.area());
         }
         AppState::ACI(widget) => {
