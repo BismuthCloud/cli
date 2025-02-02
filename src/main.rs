@@ -933,6 +933,14 @@ async fn check_version() -> Result<()> {
     Ok(())
 }
 
+fn daneel_url(api_url: &Url) -> &'static str {
+    match api_url.host_str() {
+        Some("localhost") => "http://localhost:8765",
+        Some("api-staging.bismuth.cloud") => "https://chat-staging.bismuth.cloud",
+        _ => "https://chat.bismuth.cloud",
+    }
+}
+
 async fn _main() -> Result<()> {
     let args = Cli::parse();
 
@@ -1004,6 +1012,8 @@ async fn _main() -> Result<()> {
             .join(&format!("/organizations/{}/", config.organization_id))?,
         &config.token,
     )?;
+    let d_url = Url::parse(daneel_url(&args.global.api_url)).unwrap();
+    let daneel_client = APIClient::new(&d_url, "")?;
 
     match &args.command {
         cli::Command::Configure { command } => match command {
@@ -1783,6 +1793,7 @@ async fn _main() -> Result<()> {
                         &session,
                         &repo_path,
                         &client,
+                        &daneel_client,
                     )
                     .await
                 }
