@@ -167,6 +167,7 @@ impl<'de> Deserialize<'de> for ContextStorage {
 
         match value {
             serde_json::Value::String(s) => {
+                trace!("Custom deserialize string: {:?}", s);
                 if s == "null" {
                     Ok(ContextStorage {
                         mode: "single".to_string(),
@@ -184,7 +185,7 @@ impl<'de> Deserialize<'de> for ContextStorage {
                 }
             }
             value => {
-                trace!("WTF: {:?}", value);
+                trace!("Custom deserialize: {:?}", value);
                 let helper: Helper =
                     serde_json::from_value(value).map_err(serde::de::Error::custom)?;
                 Ok(ContextStorage {
@@ -195,26 +196,6 @@ impl<'de> Deserialize<'de> for ContextStorage {
             }
         }
     }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Model {
-    Gpt35Turbo,
-    Gpt4,
-    Claude,
-    ClaudeInstant,
-}
-
-impl Default for Model {
-    fn default() -> Self {
-        Model::Gpt35Turbo
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ModelList {
-    pub models: Vec<String>,
 }
 
 pub fn default_model() -> String {
@@ -314,7 +295,6 @@ pub struct CreditUsage {
 }
 
 pub mod ws {
-    use crate::api::{Model, ModelList};
     use serde::{ser::SerializeStruct, Deserialize, Serialize};
 
     #[derive(Debug, Serialize, Deserialize)]
