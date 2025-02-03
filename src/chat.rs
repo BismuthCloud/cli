@@ -39,7 +39,6 @@ use crate::{
     api::{
         self,
         ws::{ChatModifiedFile, RunCommandResponse},
-        Model, ModelList,
     },
     tree::{FileTreeWidget, TreeNodeStyle},
     APIClient, ResponseErrorExt as _,
@@ -600,7 +599,7 @@ impl CodeBlock {
                             // Necessary so empty lines don't get double rendered
                             (if line != "\n" {
                                 vec![if diff_highlight_lines.contains(&line_no) {
-                                    ("#", Style::default().fg(ratatui::style::Color::Green))
+                                    ("█", Style::default().fg(ratatui::style::Color::Green))
                                 } else {
                                     (" ", Style::default())
                                 }]
