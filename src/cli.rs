@@ -84,15 +84,16 @@ pub struct LiteralOrFile {
 }
 
 #[derive(Debug, Clone, Args)]
+#[derive(Debug, Clone, Args)]
 pub struct GlobalOpts {
     #[arg(long, hide = true, default_value = std::env::var("BISMUTH_API").unwrap_or("https://api.bismuth.cloud".to_string()))]
     pub api_url: Url,
-
     #[arg(long, hide = true, default_value = default_config_file().into_os_string())]
     pub config_file: PathBuf,
-
+    #[arg(long, help = "Allow execution of shell commands", default_value_t = true)]
+    pub run_commands: bool,
     #[command(flatten)]
-    pub verbose: clap_verbosity_flag::Verbosity,
+pub verbose: clap_verbosity_flag::Verbosity,
 }
 
 #[derive(Debug, Subcommand)]

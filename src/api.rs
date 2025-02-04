@@ -100,7 +100,178 @@ pub struct User {
     pub email: String,
     pub username: String,
     pub name: String,
-    pub organizations: Vec<Organization>,
+pub organizations: Vec<Organization>,
+}
+
+///////////////////////////////
+// Begin apply_file_edits RPC endpoint and helpers
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FileEdit {
+    pub path: String,
+    pub part: String,
+    pub replace: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApplyFileEditsRequest {
+    pub edits: Vec<FileEdit>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FileEditResult {
+    pub path: String,
+    pub changed: bool,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApplyFileEditsResponse {
+    pub results: Vec<FileEditResult>,
+}
+
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a_len = a.chars().count();
+    let b_len = b.chars().count();
+    if a_len == 0 { return b_len; }
+    if b_len == 0 { return a_len; }
+    let mut prev_row: Vec<usize> = (0..=b_len).collect();
+    let mut curr_row = vec![0; b_len + 1];
+    for (i, ca) in a.chars().enumerate() {
+        curr_row[0] = i + 1;
+        for (j, cb) in b.chars().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            curr_row[j + 1] = std::cmp::min(
+                std::cmp::min(curr_row[j] + 1, prev_row[j + 1] + 1),
+                prev_row[j] + cost
+            );
+        }
+        prev_row.clone_from_slice(&curr_row);
+    }
+    prev_row[b_len]
+}
+
+fn similarity_ratio(a: &str, b: &str) -> f64 {
+    let lev = levenshtein(a, b) as f64;
+    let max_len = a.chars().count().max(b.chars().count()) as f64;
+    if max_len == 0.0 { return 1.0; }
+    1.0 - lev / max_len
+}
+
+pub fn replace_closest_edit_distance(whole: &str, part: &str, replace: &str) -> Option<String> {
+    let whole_lines: Vec<&str> = whole.split('\n').collect();
+    let part_lines: Vec<&str> = part.split('\n').collect();
+    let replace_lines: Vec<&str> = replace.split('\n').collect();
+
+    let scale = 0.1;
+    let part_len = part_lines.len();
+    let min_len = ((part_len as f64) * (1.0 - scale)).floor() as usize;
+    let max_len = ((part_len as f64) * (1.0 + scale)).ceil() as usize;
+    let mut best_similarity = 0.0;
+    let mut best_start = 0;
+    let mut best_end = 0;
+    let target = part_lines.join("");
+
+    for length in min_len..=max_len {
+        if length == 0 { continue; }
+        for i in 0..=whole_lines.len().saturating_sub(length) {
+            let end = i + length;
+            let chunk = whole_lines[i..end].join("");
+            let sim = similarity_ratio(&chunk, &target);
+            if sim > best_similarity {
+                best_similarity = sim;
+                best_start = i;
+                best_end = end;
+            }
+        }
+    }
+
+    if best_similarity < 0.8 {
+        return None;
+    }
+
+    let mut modified_lines = Vec::new();
+    modified_lines.extend_from_slice(&whole_lines[..best_start]);
+    modified_lines.extend_from_slice(&replace_lines);
+    modified_lines.extend_from_slice(&whole_lines[best_end..]);
+    Some(modified_lines.join("\n"))
+}
+
+fn should_run_commands() -> bool {
+    // Toggle for running shell commands based on the RUN_COMMANDS environment variable.
+    std::env::var("RUN_COMMANDS").map(|v| v == "true").unwrap_or(true)
+}
+
+pub fn handle_apply_file_edits(payload: &str) -> Result<String, String> {
+    let req: ApplyFileEditsRequest = serde_json::from_str(payload)
+        .map_err(|e| format!("Invalid JSON payload: {}", e))?;
+    let mut results = Vec::new();
+    let mut any_file_changed = false;
+
+    for edit in req.edits.iter() {
+        match std::fs::read_to_string(&edit.path) {
+            Ok(content) => {
+                match replace_closest_edit_distance(&content, &edit.part, &edit.replace) {
+                    Some(new_content) => {
+                        if new_content != content {
+                            if let Err(e) = std::fs::write(&edit.path, new_content) {
+                                results.push(FileEditResult {
+                                    path: edit.path.clone(),
+                                    changed: false,
+                                    message: Some(format!("Failed to write file: {}", e)),
+                                });
+                                continue;
+                            }
+                            any_file_changed = true;
+                            results.push(FileEditResult {
+                                path: edit.path.clone(),
+                                changed: true,
+                                message: Some("File modified".to_string()),
+                            });
+                        } else {
+                            results.push(FileEditResult {
+                                path: edit.path.clone(),
+                                changed: false,
+                                message: Some("No changes applied".to_string()),
+                            });
+                        }
+                    },
+                    None => {
+                        results.push(FileEditResult {
+                            path: edit.path.clone(),
+                            changed: false,
+                            message: Some("No suitable match found".to_string()),
+                        });
+                    }
+                }
+            },
+            Err(e) => {
+                results.push(FileEditResult {
+                    path: edit.path.clone(),
+                    changed: false,
+                    message: Some(format!("Failed to read file: {}", e)),
+                });
+            }
+        }
+    }
+
+    if any_file_changed && should_run_commands() {
+        let commit_status = std::process::Command::new("git")
+            .args(&["commit", "-am", "Applied file edits"])
+            .status();
+        match commit_status {
+            Ok(status) if status.success() => {},
+            Ok(status) => return Err(format!("Git commit failed with exit code: {}", status)),
+            Err(e) => return Err(format!("Failed to run git commit: {}", e)),
+        }
+    }
+
+    serde_json::to_string(&ApplyFileEditsResponse { results })
+        .map_err(|e| format!("Failed to serialize response: {}", e))
+}
+
+// End apply_file_edits RPC endpoint and helpers
+
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
