@@ -103,29 +103,7 @@ pub struct User {
     pub organizations: Vec<Organization>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct FileEdit {
-    pub path: String,
-    pub part: String,
-    pub replace: String,
-}
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ApplyFileEditsRequest {
-    pub edits: Vec<FileEdit>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct FileEditResult {
-    pub path: String,
-    pub changed: bool,
-    pub message: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ApplyFileEditsResponse {
-    pub results: Vec<FileEditResult>,
-}
 
 fn levenshtein(a: &str, b: &str) -> usize {
     let a_len = a.chars().count();
@@ -199,7 +177,64 @@ pub fn replace_closest_edit_distance(whole: &str, part: &str, replace: &str) -> 
     modified_lines.extend_from_slice(&whole_lines[..best_start]);
     modified_lines.extend_from_slice(&replace_lines);
     modified_lines.extend_from_slice(&whole_lines[best_end..]);
-    Some(modified_lines.join("\n"))
+Some(modified_lines.join("\n"))
+}
+
+pub fn apply_fuzzy_file_edit(content: &str, search: &str, replace: &str) -> Result<String, String> {
+    match replace_closest_edit_distance(content, search, replace) {
+        Some(new_content) => Ok(new_content),
+        None => Err("No suitable chunk found with sufficient similarity".to_string()),
+    }
+}
+
+pub fn handle_file_rpc_edit(path: &str, search: &str, replace: &str) -> FileRPCResponse {
+    match std::fs::read_to_string(path) {
+        Ok(content) => {
+            match apply_fuzzy_file_edit(&content, search, replace) {
+                Ok(new_content) => {
+                    if new_content == content {
+                        return FileRPCResponse::EDIT {
+                            success: false,
+                            message: Some("No changes applied.".to_string()),
+                        };
+                    }
+                    if let Err(e) = std::fs::write(path, &new_content) {
+                        return FileRPCResponse::EDIT {
+                            success: false,
+                            message: Some(format!("Failed to write file: {}", e)),
+                        };
+                    }
+                    if should_run_commands() {
+                        let commit_status = std::process::Command::new("git")
+                            .args(&["commit", "-am", "Applied file edits"])
+                            .status();
+                        if let Err(e) = commit_status {
+                            return FileRPCResponse::EDIT {
+                                success: false,
+                                message: Some(format!("Failed to run git commit: {}", e)),
+                            };
+                        }
+                    }
+                    FileRPCResponse::EDIT {
+                        success: true,
+                        message: Some("File modified".to_string()),
+                    }
+                },
+                Err(err) => {
+                    FileRPCResponse::EDIT {
+                        success: false,
+                        message: Some(err),
+                    }
+                }
+            }
+        },
+        Err(e) => {
+            FileRPCResponse::EDIT {
+                success: false,
+                message: Some(format!("Failed to read file: {}", e)),
+            }
+        }
+    }
 }
 
 fn should_run_commands() -> bool {
@@ -209,73 +244,7 @@ fn should_run_commands() -> bool {
         .unwrap_or(true)
 }
 
-pub fn handle_apply_file_edits(payload: &str) -> Result<String, String> {
-    let req: ApplyFileEditsRequest =
-        serde_json::from_str(payload).map_err(|e| format!("Invalid JSON payload: {}", e))?;
-    let mut results = Vec::new();
-    let mut any_file_changed = false;
 
-    for edit in req.edits.iter() {
-        match std::fs::read_to_string(&edit.path) {
-            Ok(content) => {
-                match replace_closest_edit_distance(&content, &edit.part, &edit.replace) {
-                    Some(new_content) => {
-                        if new_content != content {
-                            if let Err(e) = std::fs::write(&edit.path, new_content) {
-                                results.push(FileEditResult {
-                                    path: edit.path.clone(),
-                                    changed: false,
-                                    message: Some(format!("Failed to write file: {}", e)),
-                                });
-                                continue;
-                            }
-                            any_file_changed = true;
-                            results.push(FileEditResult {
-                                path: edit.path.clone(),
-                                changed: true,
-                                message: Some("File modified".to_string()),
-                            });
-                        } else {
-                            results.push(FileEditResult {
-                                path: edit.path.clone(),
-                                changed: false,
-                                message: Some("No changes applied".to_string()),
-                            });
-                        }
-                    }
-                    None => {
-                        results.push(FileEditResult {
-                            path: edit.path.clone(),
-                            changed: false,
-                            message: Some("No suitable match found".to_string()),
-                        });
-                    }
-                }
-            }
-            Err(e) => {
-                results.push(FileEditResult {
-                    path: edit.path.clone(),
-                    changed: false,
-                    message: Some(format!("Failed to read file: {}", e)),
-                });
-            }
-        }
-    }
-
-    if any_file_changed && should_run_commands() {
-        let commit_status = std::process::Command::new("git")
-            .args(&["commit", "-am", "Applied file edits"])
-            .status();
-        match commit_status {
-            Ok(status) if status.success() => {}
-            Ok(status) => return Err(format!("Git commit failed with exit code: {}", status)),
-            Err(e) => return Err(format!("Failed to run git commit: {}", e)),
-        }
-    }
-
-    serde_json::to_string(&ApplyFileEditsResponse { results })
-        .map_err(|e| format!("Failed to serialize response: {}", e))
-}
 
 // End apply_file_edits RPC endpoint and helpers
 
@@ -477,10 +446,7 @@ pub mod ws {
     use crate::api::FileEdit;
     use serde::{ser::SerializeStruct, Deserialize, Serialize};
 
-    #[derive(Debug, Serialize, Deserialize, Clone)]
-    #[serde(rename_all = "camelCase")]
-    pub struct WebSocketEditMessage {
-        pub edits: Vec<FileEdit>,
+
     }
     #[derive(Debug, Serialize, Deserialize)]
     #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -587,7 +553,7 @@ pub enum FileRPCRequest {
     List,
     Read { path: String },
     Search { query: String },
-    EDIT { path: String, part: String, replace: String },
+    EDIT { path: String, search: String, replace: String },
 }
 
 #[derive(Debug, Serialize)]
@@ -598,6 +564,11 @@ pub enum FileRPCResponse {
     },
     Read {
         content: Option<String>,
+    },
+    EDIT {
+        success: bool,
+        message: Option<String>,
+    },
     },
     Search {
         // (filename, line number, line content)

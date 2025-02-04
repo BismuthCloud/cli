@@ -16,24 +16,22 @@ pub struct Cli {
     pub command: Command,
 }
 
-pub fn process_websocket_message(msg: crate::api::ws::WebSocketEditMessage, opts: &GlobalOpts) {
+pub fn process_websocket_message(msg: &str, opts: &GlobalOpts) {
     if opts.run_commands {
-        // Construct an ApplyFileEditsRequest from the edits in the message.
-        let request = crate::api::ApplyFileEditsRequest { edits: msg.edits };
-        let payload = match serde_json::to_string(&request) {
-            Ok(p) => p,
+        let rpc_request: crate::api::FileRPCRequest = match serde_json::from_str(msg) {
+            Ok(r) => r,
             Err(e) => {
-                println!("Failed to serialize file edit request: {}", e);
+                println!("Failed to deserialize RPC request: {}", e);
                 return;
             }
         };
-        match crate::api::handle_apply_file_edits(&payload) {
-            Ok(response) => {
-                println!("Edit applied successfully: {}", response);
-                // Here you would normally send the response over the WebSocket.
-            },
-            Err(err) => {
-                println!("Edit failed: {}", err);
+        match rpc_request {
+            crate::api::FileRPCRequest::EDIT { path, search, replace } => {
+                let response = crate::api::handle_file_rpc_edit(&path, &search, &replace);
+                println!("Edit applied response: {:?}", response);
+            }
+            _ => {
+                println!("Received unsupported FileRPC request type.");
             }
         }
     } else {
@@ -428,4 +426,6 @@ pub enum BillingCommand {
     CreditsRemaining,
     /// Open credit purchase page
     Refill,
+}
+}
 }
