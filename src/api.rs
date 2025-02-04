@@ -272,8 +272,6 @@ pub fn handle_apply_file_edits(payload: &str) -> Result<String, String> {
 
 // End apply_file_edits RPC endpoint and helpers
 
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct GitHubRepo {
@@ -820,7 +818,6 @@ pub mod ws {
                     )
                     .map_err(serde::de::Error::custom)?;
                     Ok(Message::SwitchModel(model))
-                }
                 }
                 Some("ACI") => {
                     let aci = serde_json::from_value(
