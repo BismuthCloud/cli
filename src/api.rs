@@ -369,7 +369,7 @@ impl<'de> Deserialize<'de> for ContextStorage {
             }
         }
     }
-}
+
 
 pub fn default_model() -> String {
     "auto".to_string()
@@ -471,6 +471,12 @@ pub struct CreditUsage {
 pub mod ws {
     use serde::{ser::SerializeStruct, Deserialize, Serialize};
 
+    }
+    #[derive(Debug, Serialize, Deserialize, Clone)]
+    #[serde(rename_all = "camelCase")]
+    pub struct WebSocketEditMessage {
+        pub edits: Vec<FileEdit>,
+    }
     #[derive(Debug, Serialize, Deserialize)]
     #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
     pub enum MessageType {
@@ -645,8 +651,9 @@ pub mod ws {
         Chat(ChatMessage),
         ResponseState(ResponseStateMessage),
         RunCommand(RunCommandMessage),
-        RunCommandResponse(RunCommandResponse),
-        ACI(ACIMessage),
+    RunCommandResponse(RunCommandResponse),
+    WebSocketEdit(WebSocketEditMessage),
+    ACI(ACIMessage),
         FileRPC(FileRPCRequest),
         FileRPCResponse(FileRPCResponse),
         KillGeneration,
@@ -708,6 +715,12 @@ pub mod ws {
                     let mut state = serializer.serialize_struct("Message", 4)?;
                     state.serialize_field("type", "RUN_COMMAND_RESPONSE")?;
                     state.serialize_field("runCommandResponse", response)?;
+                    state.end()
+                }
+                Message::WebSocketEdit(ref msg) => {
+                    let mut state = serializer.serialize_struct("Message", 2)?;
+                    state.serialize_field("type", "WEBSOCKET_EDIT")?;
+                    state.serialize_field("webSocketEdit", msg)?;
                     state.end()
                 }
                 Message::KillGeneration => {
@@ -784,23 +797,30 @@ pub mod ws {
                 Some("PIN_FILE_RESPONSE") => Ok(Message::PinFileResponse),
                 Some("RUN_COMMAND") => {
                     let command = serde_json::from_value(
-                        value
-                            .get("run_command")
+                        value.get("run_command")
                             .ok_or(serde::de::Error::custom("missing inner run command"))?
                             .clone(),
                     )
                     .map_err(serde::de::Error::custom)?;
                     Ok(Message::RunCommand(command))
                 }
+                Some("WEBSOCKET_EDIT") => {
+                    let message = serde_json::from_value(
+                        value.get("webSocketEdit")
+                            .ok_or(serde::de::Error::custom("missing inner webSocketEdit"))?
+                            .clone()
+                    ).map_err(serde::de::Error::custom)?;
+                    Ok(Message::WebSocketEdit(message))
+                }
                 Some("SWITCH_MODEL") => {
                     let model = serde_json::from_value(
-                        value
-                            .get("model")
+                        value.get("model")
                             .ok_or(serde::de::Error::custom("missing inner model"))?
                             .clone(),
                     )
                     .map_err(serde::de::Error::custom)?;
                     Ok(Message::SwitchModel(model))
+                }
                 }
                 Some("ACI") => {
                     let aci = serde_json::from_value(

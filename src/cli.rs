@@ -16,6 +16,15 @@ pub struct Cli {
     pub command: Command,
 }
 
+pub fn process_websocket_message(msg: crate::api::ws::WebSocketEditMessage, opts: &GlobalOpts) {
+    if opts.run_commands {
+        println!("Executing WebSocketEdits: {:?}", msg.edits);
+        // TODO: Add logic to apply file edits via RPC endpoint, etc.
+    } else {
+        println!("Websocket message received, but run_commands is disabled.");
+    }
+}
+
 pub fn default_config_file() -> PathBuf {
     if let Some(config_dir) = dirs::config_dir() {
         config_dir.join("bismuth.json")
