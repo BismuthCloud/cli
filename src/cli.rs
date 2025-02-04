@@ -18,8 +18,24 @@ pub struct Cli {
 
 pub fn process_websocket_message(msg: crate::api::ws::WebSocketEditMessage, opts: &GlobalOpts) {
     if opts.run_commands {
-        println!("Executing WebSocketEdits: {:?}", msg.edits);
-        // TODO: Add logic to apply file edits via RPC endpoint, etc.
+        // Construct an ApplyFileEditsRequest from the edits in the message.
+        let request = crate::api::ApplyFileEditsRequest { edits: msg.edits };
+        let payload = match serde_json::to_string(&request) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("Failed to serialize file edit request: {}", e);
+                return;
+            }
+        };
+        match crate::api::handle_apply_file_edits(&payload) {
+            Ok(response) => {
+                println!("Edit applied successfully: {}", response);
+                // Here you would normally send the response over the WebSocket.
+            },
+            Err(err) => {
+                println!("Edit failed: {}", err);
+            }
+        }
     } else {
         println!("Websocket message received, but run_commands is disabled.");
     }
@@ -93,16 +109,19 @@ pub struct LiteralOrFile {
 }
 
 #[derive(Debug, Clone, Args)]
-#[derive(Debug, Clone, Args)]
 pub struct GlobalOpts {
     #[arg(long, hide = true, default_value = std::env::var("BISMUTH_API").unwrap_or("https://api.bismuth.cloud".to_string()))]
     pub api_url: Url,
     #[arg(long, hide = true, default_value = default_config_file().into_os_string())]
     pub config_file: PathBuf,
-    #[arg(long, help = "Allow execution of shell commands", default_value_t = true)]
+    #[arg(
+        long,
+        help = "Allow execution of shell commands",
+        default_value_t = true
+    )]
     pub run_commands: bool,
     #[command(flatten)]
-pub verbose: clap_verbosity_flag::Verbosity,
+    pub verbose: clap_verbosity_flag::Verbosity,
 }
 
 #[derive(Debug, Subcommand)]

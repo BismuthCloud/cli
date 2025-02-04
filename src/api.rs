@@ -100,13 +100,10 @@ pub struct User {
     pub email: String,
     pub username: String,
     pub name: String,
-pub organizations: Vec<Organization>,
+    pub organizations: Vec<Organization>,
 }
 
-///////////////////////////////
-// Begin apply_file_edits RPC endpoint and helpers
-
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FileEdit {
     pub path: String,
     pub part: String,
@@ -133,8 +130,12 @@ pub struct ApplyFileEditsResponse {
 fn levenshtein(a: &str, b: &str) -> usize {
     let a_len = a.chars().count();
     let b_len = b.chars().count();
-    if a_len == 0 { return b_len; }
-    if b_len == 0 { return a_len; }
+    if a_len == 0 {
+        return b_len;
+    }
+    if b_len == 0 {
+        return a_len;
+    }
     let mut prev_row: Vec<usize> = (0..=b_len).collect();
     let mut curr_row = vec![0; b_len + 1];
     for (i, ca) in a.chars().enumerate() {
@@ -143,7 +144,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
             let cost = if ca == cb { 0 } else { 1 };
             curr_row[j + 1] = std::cmp::min(
                 std::cmp::min(curr_row[j] + 1, prev_row[j + 1] + 1),
-                prev_row[j] + cost
+                prev_row[j] + cost,
             );
         }
         prev_row.clone_from_slice(&curr_row);
@@ -154,7 +155,9 @@ fn levenshtein(a: &str, b: &str) -> usize {
 fn similarity_ratio(a: &str, b: &str) -> f64 {
     let lev = levenshtein(a, b) as f64;
     let max_len = a.chars().count().max(b.chars().count()) as f64;
-    if max_len == 0.0 { return 1.0; }
+    if max_len == 0.0 {
+        return 1.0;
+    }
     1.0 - lev / max_len
 }
 
@@ -173,7 +176,9 @@ pub fn replace_closest_edit_distance(whole: &str, part: &str, replace: &str) -> 
     let target = part_lines.join("");
 
     for length in min_len..=max_len {
-        if length == 0 { continue; }
+        if length == 0 {
+            continue;
+        }
         for i in 0..=whole_lines.len().saturating_sub(length) {
             let end = i + length;
             let chunk = whole_lines[i..end].join("");
@@ -199,12 +204,14 @@ pub fn replace_closest_edit_distance(whole: &str, part: &str, replace: &str) -> 
 
 fn should_run_commands() -> bool {
     // Toggle for running shell commands based on the RUN_COMMANDS environment variable.
-    std::env::var("RUN_COMMANDS").map(|v| v == "true").unwrap_or(true)
+    std::env::var("RUN_COMMANDS")
+        .map(|v| v == "true")
+        .unwrap_or(true)
 }
 
 pub fn handle_apply_file_edits(payload: &str) -> Result<String, String> {
-    let req: ApplyFileEditsRequest = serde_json::from_str(payload)
-        .map_err(|e| format!("Invalid JSON payload: {}", e))?;
+    let req: ApplyFileEditsRequest =
+        serde_json::from_str(payload).map_err(|e| format!("Invalid JSON payload: {}", e))?;
     let mut results = Vec::new();
     let mut any_file_changed = false;
 
@@ -235,7 +242,7 @@ pub fn handle_apply_file_edits(payload: &str) -> Result<String, String> {
                                 message: Some("No changes applied".to_string()),
                             });
                         }
-                    },
+                    }
                     None => {
                         results.push(FileEditResult {
                             path: edit.path.clone(),
@@ -244,7 +251,7 @@ pub fn handle_apply_file_edits(payload: &str) -> Result<String, String> {
                         });
                     }
                 }
-            },
+            }
             Err(e) => {
                 results.push(FileEditResult {
                     path: edit.path.clone(),
@@ -260,7 +267,7 @@ pub fn handle_apply_file_edits(payload: &str) -> Result<String, String> {
             .args(&["commit", "-am", "Applied file edits"])
             .status();
         match commit_status {
-            Ok(status) if status.success() => {},
+            Ok(status) if status.success() => {}
             Ok(status) => return Err(format!("Git commit failed with exit code: {}", status)),
             Err(e) => return Err(format!("Failed to run git commit: {}", e)),
         }
@@ -367,9 +374,9 @@ impl<'de> Deserialize<'de> for ContextStorage {
             }
         }
     }
+}
 
-
-pub fn default_model() -> String {
+fn default_model() -> String {
     "auto".to_string()
 }
 
@@ -467,9 +474,9 @@ pub struct CreditUsage {
 }
 
 pub mod ws {
+    use crate::api::FileEdit;
     use serde::{ser::SerializeStruct, Deserialize, Serialize};
 
-    }
     #[derive(Debug, Serialize, Deserialize, Clone)]
     #[serde(rename_all = "camelCase")]
     pub struct WebSocketEditMessage {
@@ -576,26 +583,28 @@ pub mod ws {
 
     #[derive(Debug, Deserialize)]
     #[serde(tag = "action", rename_all = "SCREAMING_SNAKE_CASE")]
-    pub enum FileRPCRequest {
-        List,
-        Read { path: String },
-        Search { query: String },
-    }
+pub enum FileRPCRequest {
+    List,
+    Read { path: String },
+    Search { query: String },
+    EDIT { path: String, part: String, replace: String },
+}
 
-    #[derive(Debug, Serialize)]
-    #[serde(tag = "action", rename_all = "SCREAMING_SNAKE_CASE")]
-    pub enum FileRPCResponse {
-        List {
-            files: Vec<String>,
-        },
-        Read {
-            content: Option<String>,
-        },
-        Search {
-            // (filename, line number, line content)
-            results: Vec<(String, usize, String)>,
-        },
-    }
+#[derive(Debug, Serialize)]
+#[serde(tag = "action", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum FileRPCResponse {
+    List {
+        files: Vec<String>,
+    },
+    Read {
+        content: Option<String>,
+    },
+    Search {
+        // (filename, line number, line content)
+        results: Vec<(String, usize, String)>,
+    },
+    EDIT_RESULT { result: Option<String>, error: Option<String> },
+}
 
     #[derive(Debug, Deserialize)]
     #[serde(tag = "action", rename_all = "SCREAMING_SNAKE_CASE")]
@@ -649,9 +658,9 @@ pub mod ws {
         Chat(ChatMessage),
         ResponseState(ResponseStateMessage),
         RunCommand(RunCommandMessage),
-    RunCommandResponse(RunCommandResponse),
-    WebSocketEdit(WebSocketEditMessage),
-    ACI(ACIMessage),
+        RunCommandResponse(RunCommandResponse),
+        WebSocketEdit(WebSocketEditMessage),
+        ACI(ACIMessage),
         FileRPC(FileRPCRequest),
         FileRPCResponse(FileRPCResponse),
         KillGeneration,
@@ -795,7 +804,8 @@ pub mod ws {
                 Some("PIN_FILE_RESPONSE") => Ok(Message::PinFileResponse),
                 Some("RUN_COMMAND") => {
                     let command = serde_json::from_value(
-                        value.get("run_command")
+                        value
+                            .get("run_command")
                             .ok_or(serde::de::Error::custom("missing inner run command"))?
                             .clone(),
                     )
@@ -804,15 +814,18 @@ pub mod ws {
                 }
                 Some("WEBSOCKET_EDIT") => {
                     let message = serde_json::from_value(
-                        value.get("webSocketEdit")
+                        value
+                            .get("webSocketEdit")
                             .ok_or(serde::de::Error::custom("missing inner webSocketEdit"))?
-                            .clone()
-                    ).map_err(serde::de::Error::custom)?;
+                            .clone(),
+                    )
+                    .map_err(serde::de::Error::custom)?;
                     Ok(Message::WebSocketEdit(message))
                 }
                 Some("SWITCH_MODEL") => {
                     let model = serde_json::from_value(
-                        value.get("model")
+                        value
+                            .get("model")
                             .ok_or(serde::de::Error::custom("missing inner model"))?
                             .clone(),
                     )
