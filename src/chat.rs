@@ -18,7 +18,7 @@ use ratatui::{
         event::{self, Event, KeyCode, MouseButton},
     },
     layout::{Constraint, Layout, Margin, Rect},
-    style::{Style, Stylize},
+    style::Style,
     text::{Line, Span},
     widgets::{
         block::Title, Block, Borders, Clear, Padding, Paragraph, Scrollbar, ScrollbarState,
