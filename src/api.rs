@@ -103,151 +103,6 @@ pub struct User {
     pub organizations: Vec<Organization>,
 }
 
-
-
-fn levenshtein(a: &str, b: &str) -> usize {
-    let a_len = a.chars().count();
-    let b_len = b.chars().count();
-    if a_len == 0 {
-        return b_len;
-    }
-    if b_len == 0 {
-        return a_len;
-    }
-    let mut prev_row: Vec<usize> = (0..=b_len).collect();
-    let mut curr_row = vec![0; b_len + 1];
-    for (i, ca) in a.chars().enumerate() {
-        curr_row[0] = i + 1;
-        for (j, cb) in b.chars().enumerate() {
-            let cost = if ca == cb { 0 } else { 1 };
-            curr_row[j + 1] = std::cmp::min(
-                std::cmp::min(curr_row[j] + 1, prev_row[j + 1] + 1),
-                prev_row[j] + cost,
-            );
-        }
-        prev_row.clone_from_slice(&curr_row);
-    }
-    prev_row[b_len]
-}
-
-fn similarity_ratio(a: &str, b: &str) -> f64 {
-    let lev = levenshtein(a, b) as f64;
-    let max_len = a.chars().count().max(b.chars().count()) as f64;
-    if max_len == 0.0 {
-        return 1.0;
-    }
-    1.0 - lev / max_len
-}
-
-pub fn replace_closest_edit_distance(whole: &str, part: &str, replace: &str) -> Option<String> {
-    let whole_lines: Vec<&str> = whole.split('\n').collect();
-    let part_lines: Vec<&str> = part.split('\n').collect();
-    let replace_lines: Vec<&str> = replace.split('\n').collect();
-
-    let scale = 0.1;
-    let part_len = part_lines.len();
-    let min_len = ((part_len as f64) * (1.0 - scale)).floor() as usize;
-    let max_len = ((part_len as f64) * (1.0 + scale)).ceil() as usize;
-    let mut best_similarity = 0.0;
-    let mut best_start = 0;
-    let mut best_end = 0;
-    let target = part_lines.join("");
-
-    for length in min_len..=max_len {
-        if length == 0 {
-            continue;
-        }
-        for i in 0..=whole_lines.len().saturating_sub(length) {
-            let end = i + length;
-            let chunk = whole_lines[i..end].join("");
-            let sim = similarity_ratio(&chunk, &target);
-            if sim > best_similarity {
-                best_similarity = sim;
-                best_start = i;
-                best_end = end;
-            }
-        }
-    }
-
-    if best_similarity < 0.8 {
-        return None;
-    }
-
-    let mut modified_lines = Vec::new();
-    modified_lines.extend_from_slice(&whole_lines[..best_start]);
-    modified_lines.extend_from_slice(&replace_lines);
-    modified_lines.extend_from_slice(&whole_lines[best_end..]);
-Some(modified_lines.join("\n"))
-}
-
-pub fn apply_fuzzy_file_edit(content: &str, search: &str, replace: &str) -> Result<String, String> {
-    match replace_closest_edit_distance(content, search, replace) {
-        Some(new_content) => Ok(new_content),
-        None => Err("No suitable chunk found with sufficient similarity".to_string()),
-    }
-}
-
-pub fn handle_file_rpc_edit(path: &str, search: &str, replace: &str) -> FileRPCResponse {
-    match std::fs::read_to_string(path) {
-        Ok(content) => {
-            match apply_fuzzy_file_edit(&content, search, replace) {
-                Ok(new_content) => {
-                    if new_content == content {
-                        return FileRPCResponse::EDIT {
-                            success: false,
-                            message: Some("No changes applied.".to_string()),
-                        };
-                    }
-                    if let Err(e) = std::fs::write(path, &new_content) {
-                        return FileRPCResponse::EDIT {
-                            success: false,
-                            message: Some(format!("Failed to write file: {}", e)),
-                        };
-                    }
-                    if should_run_commands() {
-                        let commit_status = std::process::Command::new("git")
-                            .args(&["commit", "-am", "Applied file edits"])
-                            .status();
-                        if let Err(e) = commit_status {
-                            return FileRPCResponse::EDIT {
-                                success: false,
-                                message: Some(format!("Failed to run git commit: {}", e)),
-                            };
-                        }
-                    }
-                    FileRPCResponse::EDIT {
-                        success: true,
-                        message: Some("File modified".to_string()),
-                    }
-                },
-                Err(err) => {
-                    FileRPCResponse::EDIT {
-                        success: false,
-                        message: Some(err),
-                    }
-                }
-            }
-        },
-        Err(e) => {
-            FileRPCResponse::EDIT {
-                success: false,
-                message: Some(format!("Failed to read file: {}", e)),
-            }
-        }
-    }
-}
-
-fn should_run_commands() -> bool {
-    // Toggle for running shell commands based on the RUN_COMMANDS environment variable.
-    std::env::var("RUN_COMMANDS")
-        .map(|v| v == "true")
-        .unwrap_or(true)
-}
-
-
-
-// End apply_file_edits RPC endpoint and helpers
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct GitHubRepo {
@@ -443,11 +298,10 @@ pub struct CreditUsage {
 }
 
 pub mod ws {
-    use crate::api::FileEdit;
+    use std::{fs::File, str};
+
     use serde::{ser::SerializeStruct, Deserialize, Serialize};
 
-
-    }
     #[derive(Debug, Serialize, Deserialize)]
     #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
     pub enum MessageType {
@@ -547,35 +401,40 @@ pub mod ws {
         pub modified_files: Vec<ChatModifiedFile>,
     }
 
+    #[derive(Debug, Deserialize, Clone)]
+    pub struct FileEdit {
+        pub path: String,
+        pub search: String,
+        pub replace: String,
+    }
+
     #[derive(Debug, Deserialize)]
     #[serde(tag = "action", rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum FileRPCRequest {
-    List,
-    Read { path: String },
-    Search { query: String },
-    EDIT { path: String, search: String, replace: String },
-}
+    pub enum FileRPCRequest {
+        List,
+        Read { path: String },
+        Search { query: String },
+        Edit { edits: Vec<FileEdit> },
+    }
 
-#[derive(Debug, Serialize)]
-#[serde(tag = "action", rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum FileRPCResponse {
-    List {
-        files: Vec<String>,
-    },
-    Read {
-        content: Option<String>,
-    },
-    EDIT {
-        success: bool,
-        message: Option<String>,
-    },
-    },
-    Search {
-        // (filename, line number, line content)
-        results: Vec<(String, usize, String)>,
-    },
-    EDIT_RESULT { result: Option<String>, error: Option<String> },
-}
+    #[derive(Debug, Serialize)]
+    #[serde(tag = "action", rename_all = "SCREAMING_SNAKE_CASE")]
+    pub enum FileRPCResponse {
+        List {
+            files: Vec<String>,
+        },
+        Read {
+            content: Option<String>,
+        },
+        Edit {
+            success: bool,
+            message: Option<String>,
+        },
+        Search {
+            // (filename, line number, line content)
+            results: Vec<(String, usize, String)>,
+        },
+    }
 
     #[derive(Debug, Deserialize)]
     #[serde(tag = "action", rename_all = "SCREAMING_SNAKE_CASE")]
@@ -630,7 +489,6 @@ pub enum FileRPCResponse {
         ResponseState(ResponseStateMessage),
         RunCommand(RunCommandMessage),
         RunCommandResponse(RunCommandResponse),
-        WebSocketEdit(WebSocketEditMessage),
         ACI(ACIMessage),
         FileRPC(FileRPCRequest),
         FileRPCResponse(FileRPCResponse),
@@ -693,12 +551,6 @@ pub enum FileRPCResponse {
                     let mut state = serializer.serialize_struct("Message", 4)?;
                     state.serialize_field("type", "RUN_COMMAND_RESPONSE")?;
                     state.serialize_field("runCommandResponse", response)?;
-                    state.end()
-                }
-                Message::WebSocketEdit(ref msg) => {
-                    let mut state = serializer.serialize_struct("Message", 2)?;
-                    state.serialize_field("type", "WEBSOCKET_EDIT")?;
-                    state.serialize_field("webSocketEdit", msg)?;
                     state.end()
                 }
                 Message::KillGeneration => {
@@ -782,16 +634,6 @@ pub enum FileRPCResponse {
                     )
                     .map_err(serde::de::Error::custom)?;
                     Ok(Message::RunCommand(command))
-                }
-                Some("WEBSOCKET_EDIT") => {
-                    let message = serde_json::from_value(
-                        value
-                            .get("webSocketEdit")
-                            .ok_or(serde::de::Error::custom("missing inner webSocketEdit"))?
-                            .clone(),
-                    )
-                    .map_err(serde::de::Error::custom)?;
-                    Ok(Message::WebSocketEdit(message))
                 }
                 Some("SWITCH_MODEL") => {
                     let model = serde_json::from_value(
