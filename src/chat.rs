@@ -2372,8 +2372,9 @@ impl App {
                                                         - self.chat_history.scroll_position
                                                             as isize)
                                                         == (mouse.row as isize) - 1
-                                                        && (mouse.column == fb_area.width + 1
-                                                            || mouse.column == fb_area.width + 2)
+                                                        && (mouse.column >= fb_area.width + 1
+                                                            && mouse.column <= fb_area.width + 6)
+                                                    // len("[copy]")
                                                     {
                                                         clipboard_ctx
                                                             .set_contents(block.raw.clone())
