@@ -15,29 +15,6 @@ pub struct Cli {
     pub command: Command,
 }
 
-pub fn process_websocket_message(msg: &str, opts: &GlobalOpts) {
-    if opts.run_commands {
-        let rpc_request: crate::api::FileRPCRequest = match serde_json::from_str(msg) {
-            Ok(r) => r,
-            Err(e) => {
-                println!("Failed to deserialize RPC request: {}", e);
-                return;
-            }
-        };
-        match rpc_request {
-            crate::api::FileRPCRequest::EDIT { path, search, replace } => {
-                let response = crate::api::handle_file_rpc_edit(&path, &search, &replace);
-                println!("Edit applied response: {:?}", response);
-            }
-            _ => {
-                println!("Received unsupported FileRPC request type.");
-            }
-        }
-    } else {
-        println!("Websocket message received, but run_commands is disabled.");
-    }
-}
-
 pub fn default_config_file() -> PathBuf {
     if let Some(config_dir) = dirs::config_dir() {
         config_dir.join("bismuth.json")
