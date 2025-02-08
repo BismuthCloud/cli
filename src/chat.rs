@@ -433,6 +433,34 @@ fn commit(repo_path: &Path, message: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+fn leave_staged(repo_path: &Path) -> Result<()> {
+    let repo = git2::Repository::open(repo_path)?;
+
+    let head = repo.head()?;
+    let parent_commit = repo.find_commit(head.target().unwrap())?;
+
+    // Don't reset unless this is a temp commit
+    if parent_commit.message().unwrap_or("") != "Bismuth Temp Commit" {
+        return Ok(());
+    }
+
+    Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .arg("reset")
+        .output()
+        .map_err(|e| anyhow!("Failed to run git reset: {}", e))
+        .and_then(|o| {
+            if o.status.success() {
+                Ok(())
+            } else {
+                Err(anyhow!("git reset failed (code={})", o.status))
+            }
+        })?;
+
+    Ok(())
+}
+
 fn revert(repo_path: &Path) -> Result<()> {
     let repo = git2::Repository::open(repo_path)?;
 
@@ -1156,7 +1184,10 @@ impl Widget for &mut DiffReviewWidget {
         .block(Block::bordered().title(vec![
             " Review Diff ".into(),
             if self.can_apply {
-                Span::styled("(y to commit, n to revert) ", ratatui::style::Color::Yellow)
+                Span::styled(
+                    "(y to commit, s to stage, n to revert) ",
+                    ratatui::style::Color::Yellow,
+                )
             } else {
                 Span::styled("(press Esc to close) ", ratatui::style::Color::Yellow)
             },
@@ -2133,6 +2164,33 @@ impl App {
                     Event::Key(key) if key.kind == event::KeyEventKind::Press => match key.code {
                         KeyCode::Char('y') if diff.can_apply => {
                             commit(&self.repo_path, diff.commit_message.as_deref())?;
+                            let client = self.client.clone();
+                            let project = self.project.id;
+                            let feature = self.feature.id;
+                            let message_id = diff.msg_id;
+                            let paths = list_all_files(&self.repo_path).unwrap();
+                            let current_pinned =
+                                self.file_browser.pinned.clone().into_iter().collect();
+                            self.file_browser = FileTreeWidget::new(paths, current_pinned);
+
+                            tokio::spawn(async move {
+                                let _ = client
+                                    .post(&format!(
+                                        "/projects/{}/features/{}/chat/accepted",
+                                        project, feature,
+                                    ))
+                                    .json(&api::GenerationAcceptedRequest {
+                                        message_id,
+                                        accepted: true,
+                                    })
+                                    .send()
+                                    .await;
+                            });
+                            let mut state = self.state.lock().unwrap();
+                            *state = AppState::Chat;
+                        }
+                        KeyCode::Char('s') if diff.can_apply => {
+                            leave_staged(&self.repo_path)?;
                             let client = self.client.clone();
                             let project = self.project.id;
                             let feature = self.feature.id;
