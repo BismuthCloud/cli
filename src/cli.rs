@@ -95,6 +95,12 @@ pub struct GlobalOpts {
         default_value_t = true
     )]
     pub run_commands: bool,
+    #[arg(
+        long,
+        help = "Run in headless mode (no interactive prompts)",
+        default_value_t = false
+    )]
+    pub headless: bool,
     #[command(flatten)]
     pub verbose: clap_verbosity_flag::Verbosity,
 }
