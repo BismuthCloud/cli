@@ -408,6 +408,24 @@ pub mod ws {
         pub replace: String,
     }
 
+    #[derive(Debug, Serialize, Deserialize, Clone)]
+    pub struct FileRPCWriteActionResult {
+        pub success: bool,
+        pub path: String,
+        pub message: Option<String>,
+    }
+
+    #[derive(Debug, Deserialize, Clone)]
+    pub struct FileCreate {
+        pub path: String,
+        pub content: String,
+    }
+
+    #[derive(Debug, Deserialize, Clone)]
+    pub struct FileDelete {
+        pub path: String,
+    }
+
     #[derive(Debug, Deserialize)]
     #[serde(tag = "action", rename_all = "SCREAMING_SNAKE_CASE")]
     pub enum FileRPCRequest {
@@ -415,6 +433,8 @@ pub mod ws {
         Read { path: String },
         Search { query: String },
         Edit { edits: Vec<FileEdit> },
+        Create { creates: Vec<FileCreate> },
+        Delete { deletes: Vec<FileDelete> },
     }
 
     #[derive(Debug, Serialize)]
@@ -427,8 +447,13 @@ pub mod ws {
             content: Option<String>,
         },
         Edit {
-            success: bool,
-            message: Option<String>,
+            results: Vec<FileRPCWriteActionResult>,
+        },
+        Create {
+            results: Vec<FileRPCWriteActionResult>,
+        },
+        Delete {
+            results: Vec<FileRPCWriteActionResult>,
         },
         Search {
             // (filename, line number, line content)

@@ -39,7 +39,7 @@ use url::Url;
 use crate::{
     api::{
         self,
-        ws::{ChatModifiedFile, RunCommandResponse},
+        ws::{ChatModifiedFile, FileRPCWriteActionResult, RunCommandResponse},
     },
     tree::{FileTreeWidget, TreeNodeStyle},
     APIClient, ResponseErrorExt as _,
@@ -2006,26 +2006,103 @@ impl App {
                             let files = list_all_files(repo_path).unwrap();
                             api::ws::FileRPCResponse::List { files }
                         }
-                        api::ws::FileRPCRequest::Edit { edits } => {
-                            edits.iter().for_each(|edit| {
-                                let path = repo_path.join(&edit.path);
-                                let content = std::fs::read_to_string(&path).unwrap();
-                                let new_content = App::apply_fuzzy_file_edit(
-                                    &content,
-                                    &edit.search,
-                                    &edit.replace,
-                                )
-                                .unwrap_or_else(|e| {
-                                    trace!("Error applying fuzzy edit: {}", e);
-                                    content
-                                });
-                                std::fs::write(&path, new_content).unwrap();
-                            });
+                        api::ws::FileRPCRequest::Delete { deletes } => {
+                            let results = deletes
+                                .iter()
+                                .map(|delete| {
+                                    let path = repo_path.join(&delete.path);
+                                    if path.exists() {
+                                        match std::fs::remove_file(&path) {
+                                            Ok(_) => api::ws::FileRPCWriteActionResult {
+                                                success: true,
+                                                path: delete.path.clone(),
+                                                message: None,
+                                            },
+                                            Err(e) => api::ws::FileRPCWriteActionResult {
+                                                success: false,
+                                                path: delete.path.clone(),
+                                                message: Some(e.to_string()),
+                                            },
+                                        }
+                                    } else {
+                                        FileRPCWriteActionResult {
+                                            success: true,
+                                            path: delete.path.clone(),
+                                            message: None,
+                                        }
+                                    }
+                                })
+                                .collect();
 
-                            api::ws::FileRPCResponse::Edit {
-                                success: true,
-                                message: None,
-                            }
+                            api::ws::FileRPCResponse::Delete { results }
+                        }
+                        api::ws::FileRPCRequest::Create { creates } => {
+                            let results = creates
+                                .iter()
+                                .map(|create| {
+                                    let path = repo_path.join(&create.path);
+                                    if !path.exists() {
+                                        match std::fs::write(&path, &create.content) {
+                                            Ok(_) => FileRPCWriteActionResult {
+                                                success: true,
+                                                path: create.path.clone(),
+                                                message: None,
+                                            },
+                                            Err(e) => FileRPCWriteActionResult {
+                                                success: false,
+                                                path: create.path.clone(),
+                                                message: Some(e.to_string()),
+                                            },
+                                        }
+                                    } else {
+                                        FileRPCWriteActionResult {
+                                            success: true,
+                                            path: create.path.clone(),
+                                            message: None,
+                                        }
+                                    }
+                                })
+                                .collect();
+
+                            api::ws::FileRPCResponse::Create { results }
+                        }
+                        api::ws::FileRPCRequest::Edit { edits } => {
+                            let results = edits
+                                .iter()
+                                .map(|edit| {
+                                    let path = repo_path.join(&edit.path);
+                                    let content = std::fs::read_to_string(&path).unwrap();
+                                    let new_content_res = App::apply_fuzzy_file_edit(
+                                        &content,
+                                        &edit.search,
+                                        &edit.replace,
+                                    );
+
+                                    match new_content_res {
+                                        Err(e) => FileRPCWriteActionResult {
+                                            success: false,
+                                            path: edit.path.clone(),
+                                            message: Some(e),
+                                        },
+                                        Ok(new_content) => {
+                                            match std::fs::write(&path, new_content) {
+                                                Ok(_) => FileRPCWriteActionResult {
+                                                    success: true,
+                                                    path: edit.path.clone(),
+                                                    message: None,
+                                                },
+                                                Err(e) => FileRPCWriteActionResult {
+                                                    success: false,
+                                                    path: edit.path.clone(),
+                                                    message: Some(e.to_string()),
+                                                },
+                                            }
+                                        }
+                                    }
+                                })
+                                .collect();
+
+                            api::ws::FileRPCResponse::Edit { results }
                         }
                         api::ws::FileRPCRequest::Read { path } => {
                             let content = std::fs::read_to_string(repo_path.join(&path)).ok();
