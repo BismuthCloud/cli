@@ -1970,7 +1970,13 @@ impl App {
                                 .map(|delete| {
                                     let path = repo_path.join(&delete.path);
                                     if path.exists() {
-                                        match std::fs::remove_file(&path) {
+                                        let result = if path.is_dir() {
+                                            std::fs::remove_dir_all(&path)
+                                        } else {
+                                            std::fs::remove_file(&path)
+                                        };
+
+                                        match result {
                                             Ok(_) => api::ws::FileRPCWriteActionResult {
                                                 success: true,
                                                 path: delete.path.clone(),
@@ -1983,7 +1989,7 @@ impl App {
                                             },
                                         }
                                     } else {
-                                        FileRPCWriteActionResult {
+                                        api::ws::FileRPCWriteActionResult {
                                             success: true,
                                             path: delete.path.clone(),
                                             message: None,
@@ -1999,6 +2005,24 @@ impl App {
                                 .iter()
                                 .map(|create| {
                                     let path = repo_path.join(&create.path);
+                                    let parent = path.parent().unwrap_or(Path::new(""));
+
+                                    // Create parent directories if they don't exist
+                                    if !parent.exists() {
+                                        match std::fs::create_dir_all(parent) {
+                                            Ok(_) => {}
+                                            Err(e) => {
+                                                return FileRPCWriteActionResult {
+                                                    success: false,
+                                                    path: create.path.clone(),
+                                                    message: Some(format!(
+                                                        "Failed to create directory: {}",
+                                                        e
+                                                    )),
+                                                }
+                                            }
+                                        }
+                                    }
                                     if !path.exists() {
                                         match std::fs::write(&path, &create.content) {
                                             Ok(_) => FileRPCWriteActionResult {
