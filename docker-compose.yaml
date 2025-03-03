@@ -61,12 +61,11 @@ services:
       GOOGLE_APPLICATION_CREDENTIALS: ""
       ANTHROPIC_KEY: ${ANTHROPIC_KEY}
       OPENROUTER_KEY: ${OPENROUTER_KEY}
-      GOOGLE_GEMINI_API_KEY: ${GOOGLE_GEMINI_API_KEY}
       # For dev
       PYTHONUNBUFFERED: "1"
     volumes:
       - daneel-graph:/bismuthGraph
-      - ./daneel:/usr/src/app
+      #- ./daneel:/usr/src/app
     ports:
       - "8765:8765"
     networks:
