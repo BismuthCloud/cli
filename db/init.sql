@@ -1,0 +1,6 @@
+CREATE DATABASE quarkus;
+CREATE DATABASE keycloak;
+CREATE DATABASE code;
+\c code
+CREATE EXTENSION pg_search;
+CREATE EXTENSION vector;

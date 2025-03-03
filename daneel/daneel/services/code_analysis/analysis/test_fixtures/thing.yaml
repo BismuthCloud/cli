@@ -1,0 +1,6 @@
+topkey:
+  subkey: value
+  subkey2: value2
+
+anotherkey:
+  alist: [item1, item2, item3]

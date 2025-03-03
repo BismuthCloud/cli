@@ -1,0 +1,120 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "daneel"
+dynamic = ["version"]
+description = "Bismuth's programming agent implementation"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+keywords = []
+authors = [
+  { name = "Ian Butler", email = "ian@bismuth.cloud" },
+  { name = "Nick Gregory", email = "nick@bismuth.cloud"}
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Python :: Implementation :: PyPy",
+]
+dependencies = [
+  "asimov-agents @ git+https://github.com/BismuthCloud/asimov",
+  "tree-sitter-language-pack==0.2.0",  # Pre-built packages maintained on bismuth-pypi.s3-website-us-west-2.amazonaws.com, built with dumb-pypi
+  "aiohttp==3.10.9",
+  "opentelemetry-instrumentation-aiohttp-client",
+  "GitPython==3.1.43",
+  "PyJWT==2.9.0",
+  "PyGithub==2.4.0",
+  "cryptography==43.0.1",
+  "rustworkx==0.15.1",
+  "fastapi==0.115.0",
+  "sse-starlette==2.1.3",
+  "opentelemetry-instrumentation-fastapi",
+  "websockets==13.0.1",
+  "backoff==2.2.1",
+  "google-cloud-aiplatform==1.69.0",
+  "opentelemetry-api==1.27.0",
+  "opentelemetry-sdk==1.27.0",
+  "opentelemetry-exporter-otlp==1.27.0",
+  "botocore",
+  "sentry-sdk[fastapi]==2.17.0",
+  "jinja2",
+  "google-genai",
+  "text-unidecode",
+  "numpy",
+  "python-keycloak==5.1.1",
+]
+[project.optional-dependencies]
+dev = [
+  "pytest==8.3.3",
+  "pytest-asyncio==0.24.0",
+  "pytest-mock==3.14.0",
+  "pytest-postgresql==6.1.1",
+]
+deploy = [
+  "uvicorn==0.29.0",
+]
+
+[project.urls]
+Documentation = "https://github.com/BismuthCloud/daneel#readme"
+Issues = "https://github.com/BismuthCloud/daneel/issues"
+Source = "https://github.com/BismuthCloud/daneel"
+
+[tool.hatch.version]
+path = "daneel/__about__.py"
+
+[tool.hatch.envs.default.env-vars]
+PIP_EXTRA_INDEX_URL = "http://bismuth-pypi.s3-website-us-west-2.amazonaws.com/simple"
+PIP_TRUSTED_HOST = "bismuth-pypi.s3-website-us-west-2.amazonaws.com"
+
+[tool.hatch.envs.types]
+extra-dependencies = [
+  "mypy>=1.0.0",
+  "botocore-stubs",
+]
+
+[tool.hatch.envs.hatch-test]
+extra-dependencies = [
+  "pytest-asyncio==0.24.0",
+  "pytest-mock==3.14.0",
+  "pytest-postgresql==6.1.1",
+  "pytest-timeout>=2.0.0",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.envs.types.scripts]
+check = "mypy --install-types --non-interactive {args:daneel}"
+
+[tool.mypy]
+exclude = [
+  "daneel/services/code_analysis/",
+]
+
+[tool.coverage.run]
+source_pkgs = ["daneel", "tests"]
+branch = true
+parallel = true
+omit = [
+  "daneel/__about__.py",
+]
+
+[tool.coverage.paths]
+daneel = ["daneel", "*/daneel/daneel"]
+tests = ["tests", "*/daneel/tests"]
+
+[tool.coverage.report]
+exclude_lines = [
+  "no cov",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+]
+
+[tool.pytest.ini_options]
+timeout = 10
+timeout_method = "thread"

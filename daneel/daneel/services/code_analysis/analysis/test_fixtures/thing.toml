@@ -1,0 +1,11 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+dependencies = [
+  "abc"
+]
+dev-dependencies = [
+  "def"
+]

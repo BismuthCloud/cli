@@ -1,0 +1,19 @@
+<web-app>
+    <servlet>
+        <servlet-name>GitServlet</servlet-name>
+        <servlet-class>org.bismuth.projects.BismuthGitServlet</servlet-class>
+    </servlet>
+    <servlet-mapping>
+        <servlet-name>GitServlet</servlet-name>
+        <url-pattern>/git/*</url-pattern>
+    </servlet-mapping>
+
+    <filter>
+        <filter-name>GitAuth</filter-name>
+        <filter-class>org.bismuth.projects.BismuthGitAuthFilter</filter-class>
+    </filter>
+    <filter-mapping>
+        <filter-name>GitAuth</filter-name>
+        <url-pattern>/git/*</url-pattern>
+    </filter-mapping>
+</web-app>

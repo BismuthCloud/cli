@@ -1,0 +1,138 @@
+services:
+  api:
+    image: ghcr.io/bismuthcloud/cli/api:latest
+    build:
+      dockerfile: src/main/docker/Dockerfile.jvm
+      context: ./api
+    environment:
+      QUARKUS_KUBERNETES_CONFIG_ENABLED: "false"
+      QUARKUS_DATASOURCE_JDBC_URL: jdbc:postgresql://db:5432/quarkus
+      QUARKUS_DATASOURCE_USERNAME: postgres
+      QUARKUS_DATASOURCE_PASSWORD: postgres
+      VCS_PROJECTS_DIR: /repos
+      FRONTEND_URI: http://localhost:3000
+      QUARKUS_OIDC_AUTH_SERVER_URL: http://keycloak:8080/realms/bismuth
+      QUARKUS_OIDC_CREDENTIALS_SECRET: OHS2nes0dvwqnhKUvEfX7eHDh46z1ppv
+      QUARKUS_KEYCLOAK_ADMIN_CLIENT_SERVER_URL: http://keycloak:8080
+      QUARKUS_KEYCLOAK_ADMIN_CLIENT_REALM: bismuth
+      QUARKUS_KEYCLOAK_ADMIN_CLIENT_GRANT_TYPE: CLIENT_CREDENTIALS
+      QUARKUS_KEYCLOAK_ADMIN_CLIENT_CLIENT_ID: api
+      QUARKUS_KEYCLOAK_ADMIN_CLIENT_CLIENT_SECRET: OHS2nes0dvwqnhKUvEfX7eHDh46z1ppv
+      QUARKUS_KEYCLOAK_ADMIN_CLIENT_USERNAME: ""
+      QUARKUS_KEYCLOAK_ADMIN_CLIENT_PASSWORD: ""
+      QUARKUS_REST_CLIENT_DANEEL_URI: http://daneel:8765
+      QUARKUS_OTEL_SDK_DISABLED: "true"
+      OIDC_PUBLIC_URL: "http://localhost:8543/realms/bismuth"
+    user: root  # overridden so it can write to /repos without needing a chmod
+    volumes:
+      - git-repos:/repos
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/q/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    ports:
+      - "8080:8080"
+    networks:
+      - bismuth-network
+    depends_on:
+      db:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+
+  daneel:
+    image: ghcr.io/bismuthcloud/cli/daneel:latest
+    build:
+      context: ./daneel
+    environment:
+      DEPLOY_SELFHOST: "true"
+      GIT_HOST: api:8080
+      POSTGRES_DSN: postgresql://postgres:postgres@db:5432/quarkus
+      CODESEARCH_DSN: postgresql://postgres:postgres@db:5432/code
+      CODE_ANALYSIS_URL: http://code-analysis:8051
+      KEYCLOAK_URL: http://keycloak:8080/realms/bismuth
+      REDIS_HOST: redis
+      BISMUTH_GRAPH: /bismuthGraph
+      SIMPLE_INTERACTIVE_MODE: "1"
+      PARALLELISM: "1"
+      # Path to GCP SA JSON for text embedding generation. If unspecified, only full text search is used.
+      GOOGLE_APPLICATION_CREDENTIALS: ""
+      ANTHROPIC_KEY: ${ANTHROPIC_KEY}
+      OPENROUTER_KEY: ${OPENROUTER_KEY}
+      GOOGLE_GEMINI_API_KEY: ${GOOGLE_GEMINI_API_KEY}
+      # For dev
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - daneel-graph:/bismuthGraph
+      - ./daneel:/usr/src/app
+    ports:
+      - "8765:8765"
+    networks:
+      - bismuth-network
+    depends_on:
+      db:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  redis:
+    image: redis:7
+    networks:
+      - bismuth-network
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0
+    command: start-dev --import-realm --hostname http://localhost:8543 --hostname-backchannel-dynamic true
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://db:5432/keycloak
+      KC_DB_USERNAME: postgres
+      KC_DB_PASSWORD: postgres
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+    ports:
+      - "8543:8080"
+    networks:
+      - bismuth-network
+    healthcheck:
+      # No curl in the image, so https://www.reddit.com/r/KeyCloak/comments/14a5a1y/how_to_enable_healthcheck_on_keycloak_on/
+      # And health endpoints disabled by default so just look for a 404
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000;echo -e \"GET /health/ready HTTP/1.1\r\nhost: http://localhost\r\nConnection: close\r\n\r\n\" >&3;grep \"HTTP/1.1 404 Not Found\" <&3"]
+      start_period: 5s
+      interval: 3s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: paradedb/paradedb:0.10.3
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - db-data:/var/lib/postgresql/data/
+      - ./db/:/docker-entrypoint-initdb.d/:ro
+    networks:
+      - bismuth-network
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "code"]
+      interval: 1s
+      timeout: 5s
+      retries: 5
+
+networks:
+  bismuth-network:
+    driver: bridge
+
+volumes:
+  git-repos:
+  daneel-graph:
+  db-data:

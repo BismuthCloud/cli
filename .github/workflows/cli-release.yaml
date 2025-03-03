@@ -1,6 +1,7 @@
 name: CLI Release
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - "*"
@@ -13,9 +14,13 @@ permissions:
 jobs:
   linux-build-push:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli
     strategy:
       matrix:
         target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -40,9 +45,13 @@ jobs:
 
   macos-build-push:
     runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: cli
     strategy:
       matrix:
         target: [x86_64-apple-darwin, aarch64-apple-darwin]
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
