@@ -2,7 +2,11 @@ name: Daneel - Lint
 
 on:
   pull_request:
+    paths:
+      - 'daneel/**'
   push:
+    paths:
+      - 'daneel/**'
 
 jobs:
   mypy:
