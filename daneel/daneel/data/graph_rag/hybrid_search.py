@@ -10,8 +10,8 @@ import google.api_core.exceptions
 import opentelemetry.trace
 from asimov.asimov_base import AsimovBase
 from asimov.data.postgres.manager import DatabaseManager
-from vertexai.language_models import (
-    TextEmbeddingInput,  # type: ignore
+from vertexai.language_models import ( # type: ignore
+    TextEmbeddingInput,
     TextEmbeddingModel,
 )
 

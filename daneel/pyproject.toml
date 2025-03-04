@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "Bismuth's programming agent implementation"
 readme = "README.md"
 requires-python = ">=3.12"
-license = "MIT"
+license = "Apache-2.0"
 keywords = []
 authors = [
   { name = "Ian Butler", email = "ian@bismuth.cloud" },
@@ -28,7 +28,6 @@ dependencies = [
   "opentelemetry-instrumentation-aiohttp-client",
   "GitPython==3.1.43",
   "PyJWT==2.9.0",
-  "PyGithub==2.4.0",
   "cryptography==43.0.1",
   "rustworkx==0.15.1",
   "fastapi==0.115.0",
