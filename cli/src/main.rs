@@ -880,9 +880,8 @@ async fn _main() -> Result<()> {
 
     if let cli::Command::Version = args.command {
         println!(
-            "Bismuth CLI {} ({})",
+            "Bismuth CLI {}",
             env!("CARGO_PKG_VERSION"),
-            git_version::git_version!()
         );
         return Ok(());
     }
