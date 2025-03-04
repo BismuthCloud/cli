@@ -41,7 +41,7 @@ jobs:
       - name: Upload Release (${{ matrix.target }}) Binaries
         uses: softprops/action-gh-release@v2
         with:
-          files: bismuthcli.${{ matrix.target }}
+          files: cli/bismuthcli.${{ matrix.target }}
 
   macos-build-push:
     runs-on: macos-latest
@@ -72,13 +72,17 @@ jobs:
       - name: Upload Release (${{ matrix.target }}) Binaries
         uses: softprops/action-gh-release@v2
         with:
-          files: bismuthcli.${{ matrix.target }}
+          files: cli/bismuthcli.${{ matrix.target }}
 
   windows-build-push:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli
     strategy:
       matrix:
         target: [x86_64-pc-windows-gnu]
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -99,7 +103,7 @@ jobs:
       - name: Upload Release (${{ matrix.target }}) Binaries
         uses: softprops/action-gh-release@v2
         with:
-          files: bismuthcli.${{ matrix.target }}
+          files: cli/bismuthcli.${{ matrix.target }}
 
   update-version-page:
     runs-on: ubuntu-latest
