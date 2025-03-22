@@ -1,29 +1,24 @@
 import asyncio
-import logging
-import os
 import random
-import re
+from typing import AsyncIterator, Awaitable, Callable, List, TypeVar, Optional, Dict
 from enum import Enum
-from typing import AsyncIterator, Awaitable, Callable, Dict, List, Optional, TypeVar
-
+import re
 import google.api_core.exceptions
+from vertexai.language_models import TextEmbeddingModel, TextEmbeddingInput  # type: ignore
+import os
 import opentelemetry.trace
-from asimov.asimov_base import AsimovBase
-from asimov.data.postgres.manager import DatabaseManager
-from vertexai.language_models import ( # type: ignore
-    TextEmbeddingInput,
-    TextEmbeddingModel,
-)
+import logging
 
-from daneel.data.postgres.models import Column, DBModel
+from asimov.data.postgres.manager import DatabaseManager
+from asimov.asimov_base import AsimovBase
+
+from daneel.data.postgres.models import DBModel, Column
 
 tracer = opentelemetry.trace.get_tracer(__name__)
 
-_ = os.environ["GOOGLE_APPLICATION_CREDENTIALS"]  # fail fast
-
 T = TypeVar("T")
 
-ENABLE_EMBEDDING = os.environ["GOOGLE_APPLICATION_CREDENTIALS"] and os.path.exists(
+ENABLE_EMBEDDING = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") and os.path.exists(
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
 )
 
@@ -76,7 +71,7 @@ class SearchIndexAction(AsimovBase):
 
 class Code(DBModel):
     @classmethod
-    def db_manager(cls):
+    def db_manager(cls) -> DatabaseManager:
         db_manager = DatabaseManager(
             dsn=os.environ.get(
                 "CODESEARCH_DSN",
@@ -131,7 +126,7 @@ class Code(DBModel):
     """
 
     @classmethod
-    def create_table(cls):
+    def create_table(cls) -> None:
         cls.db_manager().execute_query(cls.CREATE_TABLE_SQL)
         cls.db_manager().execute_query(cls.FTS_IDX_SQL)
         cls.db_manager().execute_query(cls.VECTOR_IDX_SQL)
@@ -154,7 +149,7 @@ class Code(DBModel):
 
     @classmethod
     async def _embed(
-        cls, batch: List[str], input_type, sem
+        cls, batch: List[str], input_type: str, sem: asyncio.Semaphore
     ) -> list[list[float] | None]:
 
         nonempty_idxs = [i for i in range(len(batch)) if batch[i]]
@@ -198,7 +193,7 @@ class Code(DBModel):
 
     @classmethod
     async def embed(
-        cls, texts: List[str], input_type
+        cls, texts: List[str], input_type: str
     ) -> AsyncIterator[list[float] | None]:
         batches: list[list[str]] = [[]]
         for t in texts:
@@ -226,7 +221,7 @@ class Code(DBModel):
         all_actions: List[SearchIndexAction],
         progress_cb: Optional[Callable[[float], None]] = None,
         cursor=None,
-    ):
+    ) -> None:
         def group_actions(
             actions: List[SearchIndexAction],
         ) -> Dict[SearchIndexActionType, List[SearchIndexAction]]:
@@ -292,14 +287,15 @@ class Code(DBModel):
         embed = await anext(Code.embed([query], "RETRIEVAL_QUERY"))
 
         search_sql = (
-            f"""
+            (
+                f"""
         WITH scores AS (
-            SELECT * FROM code_search_idx.score_hybrid(
+            SELECT id, score_hybrid AS score FROM code_search_idx.score_hybrid(
                 bm25_query => 'text:("""
-            + " ".join(f'"{w}"' for w in query_terms)
-            + """) OR file:("""
-            + " ".join(f'"{w}"' for w in query_terms)
-            + f""")^2',
+                + " ".join(f'"{w}"' for w in query_terms)
+                + """) OR file:("""
+                + " ".join(f'"{w}"' for w in query_terms)
+                + f""")^2',
                 similarity_query => '''{embed}'' <=> embedding',
                 bm25_weight => {bm25_weight},
                 similarity_weight => {vector_weight},
@@ -307,23 +303,39 @@ class Code(DBModel):
                 similarity_limit_n => 5000
             )
         )
-        SELECT code.*, score_hybrid
+        """
+                if embed is not None
+                else f"""
+        WITH scores AS (
+            SELECT id, score_bm25 AS score FROM code_search_idx.score_bm25(
+                'text:("""
+                + " ".join(f'"{w}"' for w in query_terms)
+                + """) OR file:("""
+                + " ".join(f'"{w}"' for w in query_terms)
+                + f""")^2',
+                limit_rows => 5000
+            )
+        )
+"""
+            )
+            + f"""
+        SELECT code.*, score
         FROM code
         JOIN scores
             ON code.id = scores.id
         WHERE code.graphid = '{graph_id}'
-        ORDER BY score_hybrid DESC
+        ORDER BY score DESC
         LIMIT {top};
         """
         )
 
         return [
-            (Code.from_db_row(r), r["score_hybrid"])
+            (Code.from_db_row(r), r["score"])
             for r in cls.db_manager().execute_query(search_sql, cursor=cursor)
         ]
 
 
-def create_tables():
+def create_tables() -> None:
     Code.create_table()
 
 
