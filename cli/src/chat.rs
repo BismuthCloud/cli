@@ -1242,8 +1242,11 @@ impl Widget for &mut ACIVizWidget {
         let area = area.inner(Margin::new(4, 4));
         Clear.render(area, buf);
 
-        let block =
-            Block::bordered().title(format!(" Bismuth Agent ({} Credits Used) ", self.usage));
+        let block = Block::bordered().title(format!(
+            " Bismuth Agent (${}.{:02} Used) ",
+            self.usage / 100,
+            self.usage % 100
+        ));
         let block_area = area;
         let area = block.inner(area);
         block.render(block_area, buf);

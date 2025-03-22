@@ -1,8 +1,10 @@
 # Daneel
 
+Daneel is the real "brains" of Bismuth - the agentic code writing implementation plus supporting components (RAG, AST-based code chunking, etc.).
+
 ## Configuration
 
-When standing up a self-hosted instance of Bismuth, the main [docker-compose.yaml](https://github.com/BismuthCloud/BismuthOS/blob/main/selfhost/docker-compose.yaml) will handle nearly all env setup for you.
+When standing up a self-hosted instance of Bismuth, the main [docker-compose.yaml](/docker-compose.yaml) will handle nearly all env setup for you.
 However, it's recommended to set `GOOGLE_APPLICATION_CREDENTIALS` to enable vector search:
 
 * `GOOGLE_APPLICATION_CREDENTIALS`: Path to GCP service account JSON key.

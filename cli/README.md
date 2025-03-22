@@ -1,28 +1,7 @@
-# Bismuth
+# CLI
 
-Bismuth is your AI developer assistant. Ask it to add features or fix bugs, and it will propose changes right in your git repository.
+The CLI is the interface to Bismuth.
+Import your project, start the interactive chat mode (`biscli chat`), then ask Bismuth to fix a bug or implement a feature.
+You'll see Bismuth's progress as it goes, and changes will be shown to you as a diff to review when it's done.
 
-<!---
-Demo video
--->
-
-## Installation
-
-It's recommended to use the `bismuthcli` Python package to install this CLI.
-
-```
-pip3 install bismuthcli && python3 -m bismuth install-cli
-```
-
-### Manual Installation
-
-You can also manually run the commands that the installer package uses:
-
-```
-VERSION=$(curl -fsS https://bismuthcloud.github.io/cli/LATEST)
-TRIPLE=$(echo "$(uname -m | sed 's/aarch64/arm64/' | sed 's/arm64/aarch64/')-$([ "$(uname -s)" = "Darwin" ] && echo "apple" || echo "unknown")-$(uname -s | tr '[:upper:]' '[:lower:]')")
-curl -fsSLo /usr/local/bin/biscli "https://github.com/BismuthCloud/cli/releases/download/v${VERSION}/bismuthcli.${TRIPLE}"
-chmod +x /usr/local/bin/biscli
-```
-
-Alternatively, binaries can be manually downloaded from the [releases](https://github.com/BismuthCloud/cli/releases) page.
+![diff showing a change Bismuth is proposing](/_doc/diff.png)

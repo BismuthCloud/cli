@@ -98,6 +98,7 @@ pub enum Command {
     /// Show the CLI version
     Version,
     /// Configure the CLI
+    #[clap(hide = true)]
     Configure {
         #[clap(subcommand)]
         command: ConfigureCommand,
@@ -112,68 +113,9 @@ pub enum Command {
         #[clap(subcommand)]
         command: FeatureCommand,
     },
-    /// Interact with key-value storage
-    #[clap(hide = true)]
-    KV {
-        #[clap(subcommand)]
-        command: KVCommand,
-    },
-    /// Interact with blob (file) storage
-    #[clap(hide = true)]
-    Blob {
-        #[clap(subcommand)]
-        command: BlobCommand,
-    },
-    /// Run SQL queries against a feature's database
-    #[clap(hide = true)]
-    SQL {
-        #[clap(subcommand)]
-        command: SQLCommand,
-    },
-    Billing {
-        #[clap(subcommand)]
-        command: BillingCommand,
-    },
     /// Create a new Bismuth project, and import an existing Git repository into it.
     /// Alias of `project import`.
     Import(ImportArgs),
-    /// Deploy a feature to the cloud. Alias of `feature deploy`.
-    #[clap(hide = true)]
-    Deploy {
-        #[clap(flatten)]
-        feature: FeatureRef,
-        #[clap(long, default_value = "false")]
-        no_wait: bool,
-        #[clap(long, default_value = "15")]
-        timeout: u64,
-    },
-    /// Get the status of a deployment. Alias of `feature deploy-status`.
-    #[clap(hide = true)]
-    DeployStatus {
-        #[clap(flatten)]
-        feature: FeatureRef,
-    },
-    /// Teardown a feature. Alias of `feature teardown`.
-    #[clap(hide = true)]
-    Teardown {
-        #[clap(flatten)]
-        feature: FeatureRef,
-    },
-    /// Get the URL for a deployed feature. Alias of `feature get-url`.
-    #[clap(hide = true)]
-    GetURL {
-        #[clap(flatten)]
-        feature: FeatureRef,
-    },
-    /// Get logs from a deployment. Alias of `feature logs`.
-    #[clap(hide = true)]
-    Logs {
-        #[clap(flatten)]
-        feature: FeatureRef,
-        /// Continuously tail the log stream. Equivalent to `tail -f`.
-        #[clap(short, long, default_value_t = false)]
-        follow: bool,
-    },
     /// Interact with the Bismuth AI
     Chat {
         /// The cloned repository.
@@ -257,132 +199,4 @@ pub enum ProjectCommand {
 pub enum FeatureCommand {
     /// List all features in a project
     List { project: IdOrName },
-    /// Manage feature configuration
-    #[clap(hide = true)]
-    Config {
-        #[clap(flatten)]
-        feature: FeatureRef,
-        #[clap(subcommand)]
-        command: FeatureConfigCommand,
-    },
-    /// Deploy project/feature to the cloud
-    #[clap(hide = true)]
-    Deploy {
-        #[clap(flatten)]
-        feature: FeatureRef,
-        #[clap(long, default_value = "false")]
-        no_wait: bool,
-        #[clap(long, default_value = "15")]
-        timeout: u64,
-    },
-    /// Get the status of a deployment
-    #[clap(hide = true)]
-    DeployStatus {
-        #[clap(flatten)]
-        feature: FeatureRef,
-    },
-    /// Teardown a feature
-    #[clap(hide = true)]
-    Teardown {
-        #[clap(flatten)]
-        feature: FeatureRef,
-    },
-    /// Get the URL for a deployed feature
-    #[clap(hide = true)]
-    GetURL {
-        #[clap(flatten)]
-        feature: FeatureRef,
-    },
-    /// Get logs from a deployment
-    #[clap(hide = true)]
-    Logs {
-        #[clap(flatten)]
-        feature: FeatureRef,
-        /// Continuously tail the log stream. Equivalent to `tail -f`.
-        #[clap(short, long, default_value_t = false)]
-        follow: bool,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-pub enum FeatureConfigCommand {
-    Get { key: Option<String> },
-    Set { key: String, value: String },
-}
-
-#[derive(Debug, Subcommand)]
-#[clap(hide = true)]
-pub enum KVCommand {
-    Get {
-        #[clap(flatten)]
-        feature: FeatureRef,
-        key: String,
-    },
-    Set {
-        #[clap(flatten)]
-        feature: FeatureRef,
-        key: String,
-        value: String,
-    },
-    Delete {
-        #[clap(flatten)]
-        feature: FeatureRef,
-        key: String,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-#[clap(hide = true)]
-pub enum BlobCommand {
-    List {
-        #[clap(flatten)]
-        feature: FeatureRef,
-    },
-    Create {
-        #[clap(flatten)]
-        feature: FeatureRef,
-        key: String,
-        #[clap(flatten)]
-        value: LiteralOrFile,
-    },
-    Get {
-        #[clap(flatten)]
-        feature: FeatureRef,
-        key: String,
-        /// The path to write the blob to. Defaults to writing to stdout.
-        output: Option<PathBuf>,
-    },
-    Set {
-        #[clap(flatten)]
-        feature: FeatureRef,
-        key: String,
-        #[clap(flatten)]
-        value: LiteralOrFile,
-    },
-    Delete {
-        #[clap(flatten)]
-        feature: FeatureRef,
-        key: String,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-#[clap(hide = true)]
-pub enum SQLCommand {
-    Query {
-        #[clap(flatten)]
-        feature: FeatureRef,
-        #[clap(flatten)]
-        query: LiteralOrFile,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-pub enum BillingCommand {
-    /// Open Stripe subscription management page
-    ManageSubscription,
-    /// Get number of credits remaining
-    CreditsRemaining,
-    /// Open credit purchase page
-    Refill,
 }
