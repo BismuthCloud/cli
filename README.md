@@ -2,7 +2,7 @@
 
 ### Bismuth is your AI developer assistant. Ask it to add features or fix bugs, and it will propose changes right in your git repository.
 
-![Video showing Bismuth being used to quickly change a website](/_doc/demo.mp4)
+![Video showing Bismuth being used to quickly change a website](/_doc/demo.gif)
 
 With some of the same technology that underpins [bismuth.sh](https://bismuth.sh), the Bismuth CLI can navigate and effectively work on large, complex code bases with ease.
 It can create or edit files directly in your local repo, making small bug fixes or writing whole new features.
