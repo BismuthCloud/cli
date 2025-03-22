@@ -4,6 +4,25 @@
 
 ![Video showing Bismuth being used to quickly change a website](/_doc/demo.gif)
 
+<div align="center">
+<table>
+<tbody>
+<td align="center">
+<a href="" target="_blank"><strong>Guides</strong></a>
+</td>
+<td align="center">
+<a href="https://discord.gg/bismuthai" target="_blank"><strong>Discord</strong></a>
+</td>
+<td align="center">
+<a href="https://blog.bismuth.sh/" target="_blank"><strong>Blog</strong></a>
+</td>
+<td align="center">
+<a href="https://bismuth.sh" target="_blank"><strong>bismuth.sh</strong></a>
+</td>
+</tbody>
+</table>
+</div>
+
 With some of the same technology that underpins [bismuth.sh](https://bismuth.sh), the Bismuth CLI can navigate and effectively work on large, complex code bases with ease.
 It can create or edit files directly in your local repo, making small bug fixes or writing whole new features.
 And it fits right into your development flow as a CLI app, letting you use it alongside any editor (or even remotely!).
