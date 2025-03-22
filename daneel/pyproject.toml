@@ -59,9 +59,9 @@ deploy = [
 ]
 
 [project.urls]
-Documentation = "https://github.com/BismuthCloud/daneel#readme"
-Issues = "https://github.com/BismuthCloud/daneel/issues"
-Source = "https://github.com/BismuthCloud/daneel"
+Documentation = "https://github.com/BismuthCloud/cli#readme"
+Issues = "https://github.com/BismuthCloud/cli/issues"
+Source = "https://github.com/BismuthCloud/cli"
 
 [tool.hatch.version]
 path = "daneel/__about__.py"
