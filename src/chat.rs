@@ -1632,7 +1632,7 @@ impl App {
                 continue;
             }
             for i in 0..=whole_lines.len().saturating_sub(length) {
-                let end = i + length;
+                let end = (i + length).min(whole_lines.len());
                 let chunk = whole_lines[i..end].join("");
                 let sim = App::similarity_ratio(&chunk, &target);
                 if sim > best_similarity {
@@ -2095,31 +2095,41 @@ impl App {
                                 .iter()
                                 .map(|edit| {
                                     let path = repo_path.join(&edit.path);
-                                    let content = std::fs::read_to_string(&path).unwrap();
-                                    let new_content_res = App::apply_fuzzy_file_edit(
-                                        &content,
-                                        &edit.search,
-                                        &edit.replace,
-                                    );
+                                    let content_res = std::fs::read_to_string(&path);
 
-                                    match new_content_res {
+                                    match content_res {
                                         Err(e) => FileRPCWriteActionResult {
                                             success: false,
                                             path: edit.path.clone(),
-                                            message: Some(e),
+                                            message: Some(e.to_string()),
                                         },
-                                        Ok(new_content) => {
-                                            match std::fs::write(&path, new_content) {
-                                                Ok(_) => FileRPCWriteActionResult {
-                                                    success: true,
-                                                    path: edit.path.clone(),
-                                                    message: None,
-                                                },
+                                        Ok(content) => {
+                                            let new_content_res = App::apply_fuzzy_file_edit(
+                                                &content,
+                                                &edit.search,
+                                                &edit.replace,
+                                            );
+
+                                            match new_content_res {
                                                 Err(e) => FileRPCWriteActionResult {
                                                     success: false,
                                                     path: edit.path.clone(),
-                                                    message: Some(e.to_string()),
+                                                    message: Some(e),
                                                 },
+                                                Ok(new_content) => {
+                                                    match std::fs::write(&path, new_content) {
+                                                        Ok(_) => FileRPCWriteActionResult {
+                                                            success: true,
+                                                            path: edit.path.clone(),
+                                                            message: None,
+                                                        },
+                                                        Err(e) => FileRPCWriteActionResult {
+                                                            success: false,
+                                                            path: edit.path.clone(),
+                                                            message: Some(e.to_string()),
+                                                        },
+                                                    }
+                                                }
                                             }
                                         }
                                     }
