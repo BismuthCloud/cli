@@ -1,25 +1,27 @@
 import os
 import threading
-import uuid
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional, Type, TypeVar
+from typing import Any, Callable, Dict, Generic, List, Optional, Type, TypeVar
 
 import psycopg2.extras
 from asimov.data.postgres.manager import DatabaseManager
 from psycopg2.extras import Json
 
 T = TypeVar("T", bound="DBModel")
+R = TypeVar("R")
 
 
-class LazyAttribute:
-    def __init__(self, func):
+class LazyAttribute(Generic[R]):
+    def __init__(self, func: Callable[[Any], R]):
         self.func = func
         self.lock = threading.Lock()
 
-    def __get__(self, instance, cls):
+    def __get__(self, instance: Any, cls: Any) -> R:
         if instance is None:
-            return self
+            # When accessed from the class, return the descriptor itself
+            return self  # type: ignore
+
         attr_name = f"_{self.func.__name__}"
         if not hasattr(instance, attr_name):
             with self.lock:
@@ -27,6 +29,11 @@ class LazyAttribute:
                     value = self.func(instance)
                     setattr(instance, attr_name, value)
         return getattr(instance, attr_name)
+
+    def invalidate(self, instance: Any) -> None:
+        attr_name = f"_{self.func.__name__}"
+        if hasattr(instance, attr_name):
+            delattr(instance, attr_name)
 
 
 class Column:
@@ -62,14 +69,17 @@ class DBModel:
     def from_db_row(cls: Type[T], row: dict) -> T:
         python_dict = {
             col.python_name: (
-                col.type(row[col.db_name])
-                if not isinstance(row[col.db_name], col.type)
-                and row[col.db_name] is not None
-                else row[col.db_name]
+                col.type(row[col.db_name.lower()])
+                if not isinstance(row[col.db_name.lower()], col.type)
+                and row[col.db_name.lower()] is not None
+                else row[col.db_name.lower()]
             )
             for col in cls.COLUMNS.values()
-            if col.db_name in row
+            if col.db_name.lower() in row
         }
+        for col in cls.COLUMNS.values():
+            if col.type == Json and isinstance(python_dict[col.python_name], Json):
+                python_dict[col.python_name] = python_dict[col.python_name].adapted
         return cls(**python_dict)
 
     @classmethod
@@ -138,9 +148,9 @@ class DBModel:
 
         return db_dict
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_json_dict(self) -> Dict[str, Any]:
         return {
-            col.python_name: getattr(self, col.python_name)
+            col.db_name: getattr(self, col.python_name)
             for col in self.COLUMNS.values()
             if hasattr(self, col.python_name)
         }
@@ -225,22 +235,21 @@ class ChatMessageEntity(DBModel):
     TABLE_NAME = "chat_messages"
     COLUMNS = {
         "id": Column("id", "id", int),
-        "is_ai": Column("is_ai", "isai", bool),
-        "contains_code": Column("contains_code", "containscode", bool),
+        "is_ai": Column("is_ai", "isAI", bool),
+        "contains_code": Column("contains_code", "containsCode", bool),
         "content": Column("content", "content", str),
-        "user_id": Column("user_id", "userid", int, nullable=True),
+        "user_id": Column("user_id", "userId", int, nullable=True),
         "message_llm_context": Column(
-            "message_llm_context", "messagellmcontext", str, nullable=True
+            "message_llm_context", "messageLLMContext", str, nullable=True
         ),
-        "updated_at": Column("updated_at", "updatedat", datetime),
-        "created_at": Column("created_at", "createdat", datetime),
-        "code_block_spans": Column("code_block_spans", "codeblockspans", Json),
+        "updated_at": Column("updated_at", "updatedAt", datetime),
+        "created_at": Column("created_at", "createdAt", datetime),
         "feedback_upvote": Column(
-            "feedback_upvote", "feedbackupvote", bool, nullable=True
+            "feedback_upvote", "feedbackUpvote", bool, nullable=True
         ),
         "feedback": Column("feedback", "feedback", str, nullable=True),
-        "session_id": Column("session_id", "sessionid", int),
-        "request_id": Column("request_id", "requestid", str, nullable=True),
+        "session_id": Column("session_id", "sessionId", int),
+        "request_id": Column("request_id", "requestId", str, nullable=True),
     }
 
     CREATE_TABLE_SQL = """
@@ -304,13 +313,13 @@ class ChatSessionEntity(DBModel):
     TABLE_NAME = "chat_sessions"
     COLUMNS = {
         "id": Column("id", "id", int),
-        "feature_id": Column("feature_id", "featureid", int),
+        "feature_id": Column("feature_id", "featureId", int),
         "origin": Column("origin", "origin", str),
         "name": Column("name", "name", str, nullable=True),
-        "created_at": Column("created_at", "createdat", datetime),
-        "updated_at": Column("updated_at", "updatedat", datetime),
+        "created_at": Column("created_at", "createdAt", datetime),
+        "updated_at": Column("updated_at", "updatedAt", datetime),
         "context_storage": Column(
-            "context_storage", "contextstorage", Json, nullable=False
+            "context_storage", "contextStorage", Json, nullable=False
         ),
     }
 
@@ -356,10 +365,7 @@ class ChatSessionEntity(DBModel):
 
     def get_context(self) -> Dict[str, Any]:
         """Returns the stored context as a dict, returns empty dict if None or on error."""
-        if not self.context_storage:
-            return {}
-
-        return self.context_storage.__dict__.get("adapted", {})
+        return self.context_storage or {}
 
     def set_context(self, context: Dict[str, Any]) -> None:
         """Stores the provided dict as JSON."""
@@ -383,26 +389,18 @@ class FeatureEntity(DBModel):
     COLUMNS = {
         "id": Column("id", "id", int),
         "name": Column("name", "name", str),
-        "latest_saved_change": Column(
-            "latest_saved_change", "latestsavedchange", str, nullable=True
-        ),
-        "project_id": Column("project_id", "projectid", int),
-        "created_at": Column("created_at", "createdat", datetime),
-        "updated_at": Column("updated_at", "updatedat", datetime),
-        "function_uuid": Column(
-            "function_uuid", "functionuuid", uuid.UUID, nullable=True
-        ),
+        "project_id": Column("project_id", "projectId", int),
+        "created_at": Column("created_at", "createdAt", datetime),
+        "updated_at": Column("updated_at", "updatedAt", datetime),
     }
 
     CREATE_TABLE_SQL = """
     CREATE TABLE IF NOT EXISTS features (
         id SERIAL PRIMARY KEY,
         name TEXT,
-        latestsavedchange TEXT,
         projectid BIGINT,
         createdat TIMESTAMP,
-        updatedat TIMESTAMP,
-        functionuuid UUID
+        updatedat TIMESTAMP
     )
     """
 
@@ -410,19 +408,15 @@ class FeatureEntity(DBModel):
         self,
         id: Optional[int] = None,
         name: str = "",
-        latest_saved_change: Optional[str] = None,
         project_id: Optional[int] = None,
         created_at: Optional[datetime] = None,
         updated_at: Optional[datetime] = None,
-        function_uuid: Optional[uuid.UUID] = None,
     ):
         self.id = id
         self.name = name
-        self.latest_saved_change = latest_saved_change
         self.project_id = project_id
         self.created_at = created_at or datetime.now()
         self.updated_at = updated_at or datetime.now()
-        self.function_uuid = function_uuid
 
     @LazyAttribute
     def project(self):
@@ -439,10 +433,10 @@ class GenerationAnalysisEntity(DBModel):
     TABLE_NAME = "generation_analysis"
     COLUMNS = {
         "id": Column("id", "id", int),
-        "updated_at": Column("updated_at", "updatedat", datetime),
-        "created_at": Column("created_at", "createdat", datetime),
+        "updated_at": Column("updated_at", "updatedAt", datetime),
+        "created_at": Column("created_at", "createdAt", datetime),
         "chat_message_id": Column(
-            "chat_message_id", "chatmessageid", int, nullable=True
+            "chat_message_id", "chatMessageId", int, nullable=True
         ),
         "generation": Column("generation", "generation", str),
         "mypy": Column("mypy", "mypy", str, nullable=True),
@@ -480,22 +474,13 @@ class ProjectEntity(DBModel):
     TABLE_NAME = "projects"
     COLUMNS = {
         "id": Column("id", "id", int),
-        "updated_at": Column("updated_at", "updatedat", datetime),
-        "created_at": Column("created_at", "createdat", datetime),
+        "updated_at": Column("updated_at", "updatedAt", datetime),
+        "created_at": Column("created_at", "createdAt", datetime),
         "name": Column("name", "name", str),
         "hash": Column("hash", "hash", str),
-        "organization_id": Column("organization_id", "organizationid", int),
-        "clone_token": Column("clone_token", "internalclonetoken", str),
-        "github_app_install_id": Column(
-            "github_app_install_id", "githubappinstallid", int, nullable=True
-        ),
-        "github_repo": Column("github_repo", "githubrepo", str, nullable=True),
-        "github_config": Column("github_config", "githubconfig", dict, nullable=True),
-        "has_pushed": Column("has_pushed", "haspushed", bool),
-        "atlassian_install_id": Column(
-            "atlassian_install_id", "atlassianinstallid", int, nullable=True
-        ),
-        "bitbucket_repo": Column("bitbucket_repo", "bitbucketrepo", str, nullable=True),
+        "organization_id": Column("organization_id", "organizationId", int),
+        "clone_token": Column("clone_token", "internalCloneToken", str),
+        "has_pushed": Column("has_pushed", "hasPushed", bool),
     }
 
     CREATE_TABLE_SQL = """
@@ -507,12 +492,7 @@ class ProjectEntity(DBModel):
         hash TEXT,
         organizationid BIGINT,
         internalclonetoken TEXT,
-        githubappinstallid BIGINT,
-        githubrepo TEXT,
-        githubconfig JSONB,
         haspushed BOOLEAN DEFAULT FALSE,
-        atlassianinstallid BIGINT,
-        bitbucketrepo TEXT
     )
     """
 
@@ -525,12 +505,7 @@ class ProjectEntity(DBModel):
         hash: str = "",
         organization_id: Optional[int] = None,
         clone_token: str = "",
-        github_app_install_id: Optional[int] = None,
-        github_repo: Optional[str] = None,
-        github_config: Optional[dict] = None,
         has_pushed: bool = False,
-        atlassian_install_id: Optional[int] = None,
-        bitbucket_repo: Optional[str] = None,
     ):
         self.id = id
         self.updated_at = updated_at or datetime.now()
@@ -539,12 +514,7 @@ class ProjectEntity(DBModel):
         self.hash = hash
         self.organization_id = organization_id
         self.clone_token = clone_token
-        self.github_app_install_id = github_app_install_id
-        self.github_repo = github_repo
-        self.github_config = github_config or {}
         self.has_pushed = has_pushed
-        self.atlassian_install_id = atlassian_install_id
-        self.bitbucket_repo = bitbucket_repo
 
     @LazyAttribute
     def organization(self):
@@ -554,112 +524,21 @@ class ProjectEntity(DBModel):
     def features(self):
         return FeatureEntity.list(where="projectid = %s", params=(self.id,))
 
-    @LazyAttribute
-    def github_app_install(self):
-        if self.github_app_install_id is None:
-            return None
-        return GitHubAppInstallEntity.get(self.github_app_install_id)
-
-    @LazyAttribute
-    def atlassian_install(self):
-        if self.atlassian_install_id is None:
-            return None
-        return AtlassianAppInstallEntity.get(self.atlassian_install_id)
-
-
-class GitHubAppInstallEntity(DBModel):
-    TABLE_NAME = "github_app_installs"
-    COLUMNS = {
-        "installation_id": Column("installation_id", "installationid", int),
-        "organization_id": Column("organization_id", "orgid", int),
-        "access_token": Column("access_token", "accesstoken", str),
-        "created_at": Column("created_at", "createdat", datetime),
-        "updated_at": Column("updated_at", "updatedat", datetime),
-    }
-
-    def __init__(
-        self,
-        installation_id: Optional[int] = None,
-        organization_id: Optional[int] = None,
-        access_token: Optional[str] = None,
-        updated_at: Optional[datetime] = None,
-        created_at: Optional[datetime] = None,
-    ):
-        self.installation_id = installation_id
-        self.organization_id = organization_id
-        self.access_token = access_token
-        self.updated_at = updated_at or datetime.now()
-        self.created_at = created_at or datetime.now()
-
-    @LazyAttribute
-    def organization(self):
-        return OrganizationEntity.get(self.organization_id)
-
-    @classmethod
-    def get(
-        cls, installation_id: int, cursor=None
-    ) -> Optional["GitHubAppInstallEntity"]:
-        return cls.find_by(installation_id=installation_id, cursor=cursor)
-
-
-class FileEntity(DBModel):
-    TABLE_NAME = "files"
-    COLUMNS = {
-        "id": Column("id", "id", int),
-        "type": Column("type", "type", str),
-        "hash": Column("hash", "hash", str),
-        "name": Column("name", "name", str),
-        "path_in_project": Column("path_in_project", "pathinproject", str),
-        "updated_at": Column("updated_at", "updatedat", datetime),
-        "created_at": Column("created_at", "createdat", datetime),
-        "feature_id": Column("feature_id", "featureid", int),
-    }
-
-    CREATE_TABLE_SQL = """
-    CREATE TABLE IF NOT EXISTS files (
-        id SERIAL PRIMARY KEY,
-        type TEXT,
-        hash TEXT,
-        name TEXT,
-        pathinproject TEXT,
-        updatedat TIMESTAMP,
-        createdat TIMESTAMP,
-        featureid BIGINT 
-    )
-    """
-
-    def __init__(
-        self,
-        id: Optional[int] = None,
-        type: str = "",
-        hash: str = "",
-        name: str = "",
-        path_in_project: str = "",
-        updated_at: Optional[datetime] = None,
-        created_at: Optional[datetime] = None,
-        feature_id: Optional[int] = None,
-    ):
-        self.id = id
-        self.type = type
-        self.hash = hash
-        self.name = name
-        self.path_in_project = path_in_project
-        self.updated_at = updated_at or datetime.now()
-        self.created_at = created_at or datetime.now()
-        self.feature_id = feature_id
-
-    @LazyAttribute
-    def feature(self):
-        return FeatureEntity.get(self.feature_id)
+    def to_json_dict(self) -> Dict[str, Any]:
+        d = super().to_json_dict()
+        d["cloneToken"] = d["internalCloneToken"]
+        del d["internalCloneToken"]
+        d["features"] = [f.to_json_dict() for f in self.features]
+        return d
 
 
 class APIKeyEntity(DBModel):
     TABLE_NAME = "api_keys"
     COLUMNS = {
         "id": Column("id", "id", int),
-        "updated_at": Column("updated_at", "updatedat", datetime),
-        "created_at": Column("created_at", "createdat", datetime),
-        "user_id": Column("user_id", "userid", int),
+        "updated_at": Column("updated_at", "updatedAt", datetime),
+        "created_at": Column("created_at", "createdAt", datetime),
+        "user_id": Column("user_id", "userId", int),
         "token": Column("token", "token", str),
         "description": Column("description", "description", str),
     }
@@ -695,18 +574,21 @@ class APIKeyEntity(DBModel):
     def user(self):
         return UserEntity.get(self.user_id)
 
+    def to_json_dict(self) -> Dict[str, Any]:
+        d = super().to_json_dict()
+        del d["token"]
+        return d
+
 
 class OrganizationEntity(DBModel):
     TABLE_NAME = "organizations"
     COLUMNS = {
         "id": Column("id", "id", int),
         "name": Column("name", "name", str),
-        "created_at": Column("created_at", "createdat", datetime),
-        "updated_at": Column("updated_at", "updatedat", datetime),
-        "subscription_id": Column(
-            "subscription_id", "subscriptionid", int, nullable=True
-        ),
-        "llm_config": Column("llm_config", "llmconfig", dict, nullable=True),
+        "created_at": Column("created_at", "createdAt", datetime),
+        "updated_at": Column("updated_at", "updatedAt", datetime),
+        "subscription_id": Column("subscription_id", "subscriptionId", int),
+        "llm_config": Column("llm_config", "llmConfig", dict, nullable=True),
     }
 
     CREATE_TABLE_SQL = """
@@ -740,13 +622,29 @@ class OrganizationEntity(DBModel):
     def subscription(self):
         return (
             SubscriptionEntity.get(self.subscription_id)
-            if self.subscription_id
+            if self.subscription_id is not None
             else None
         )
 
     @LazyAttribute
     def users(self):
         return get_users_for_organization(self.id)
+
+    def add_user(self, user: "UserEntity") -> None:
+        query = "INSERT INTO organization_users (orgid, userid) VALUES (%s, %s)"
+        DBModel.db_manager().execute_query(query, (self.id, user.id))
+        OrganizationEntity.users.invalidate(self)  # type: ignore
+
+    def remove_user(self, user: "UserEntity") -> None:
+        query = "DELETE FROM organization_users WHERE orgid = %s AND userid = %s"
+        DBModel.db_manager().execute_query(query, (self.id, user.id))
+        OrganizationEntity.users.invalidate(self)  # type: ignore
+
+    def to_json_dict(self) -> Dict[str, Any]:
+        d = super().to_json_dict()
+        d["subscription"] = self.subscription
+        del d["subscriptionId"]
+        return d
 
 
 class SubscriptionType(Enum):
@@ -760,12 +658,12 @@ class SubscriptionEntity(DBModel):
     TABLE_NAME = "subscriptions"
     COLUMNS = {
         "id": Column("id", "id", int),
-        "created_at": Column("created_at", "createdat", datetime),
-        "updated_at": Column("updated_at", "updatedat", datetime),
-        "customer_id": Column("customer_id", "customerid", str),
-        "subscription_id": Column("subscription_id", "subscriptionid", str),
+        "created_at": Column("created_at", "createdAt", datetime),
+        "updated_at": Column("updated_at", "updatedAt", datetime),
+        "customer_id": Column("customer_id", "customerId", str),
+        "subscription_id": Column("subscription_id", "subscriptionId", str),
         "type": Column("type", "type", SubscriptionType),
-        "expires_at": Column("expires_at", "expiresat", datetime),
+        "expires_at": Column("expires_at", "expiresAt", datetime),
         "credits": Column("credits", "credits", int),
     }
 
@@ -807,8 +705,8 @@ class UserEntity(DBModel):
     TABLE_NAME = "users"
     COLUMNS = {
         "id": Column("id", "id", int),
-        "updated_at": Column("updated_at", "updatedat", datetime),
-        "created_at": Column("created_at", "createdat", datetime),
+        "updated_at": Column("updated_at", "updatedAt", datetime),
+        "created_at": Column("created_at", "createdAt", datetime),
         "email": Column("email", "email", str),
         "username": Column("username", "username", str),
         "name": Column("name", "name", str),
@@ -869,13 +767,13 @@ class HourlyUsageEntity(DBModel):
     """
     COLUMNS = {
         "id": Column("id", "id", int),
-        "feature_id": Column("feature_id", "featureid", int),
-        "org_id": Column("org_id", "orgid", int),
+        "feature_id": Column("feature_id", "featureId", int),
+        "org_id": Column("org_id", "orgId", int),
         "time": Column("time", "time", datetime),
         "item": Column("item", "item", str),
         "usage": Column("usage", "usage", int),
-        "created_at": Column("created_at", "createdat", datetime),
-        "updated_at": Column("updated_at", "updatedat", datetime),
+        "created_at": Column("created_at", "createdAt", datetime),
+        "updated_at": Column("updated_at", "updatedAt", datetime),
     }
 
     def __init__(
@@ -931,9 +829,9 @@ class GenerationTraceEntity(DBModel):
     """
     COLUMNS = {
         "id": Column("id", "id", int),
-        "chat_message_id": Column("chat_message_id", "chatmessageid", int),
-        "created_at": Column("created_at", "createdat", datetime),
-        "updated_at": Column("updated_at", "updatedat", datetime),
+        "chat_message_id": Column("chat_message_id", "chatMessageId", int),
+        "created_at": Column("created_at", "createdAt", datetime),
+        "updated_at": Column("updated_at", "updatedAt", datetime),
         "state": Column("state", "state", Json),
     }
 
@@ -979,21 +877,12 @@ def get_users_for_organization(org_id: int) -> List[UserEntity]:
     return [UserEntity.from_db_row(row) for row in rows]
 
 
-def add_user_to_organization(user_id: int, org_id: int):
-    query = """
-        INSERT INTO organization_users (orgid, userid)
-        VALUES (%s, %s)
-    """
-    DBModel.db_manager().execute_query(query, (org_id, user_id))
-
-
 def create_all_tables():
     ChatSessionEntity.create_table()
     ChatMessageEntity.create_table()
     FeatureEntity.create_table()
     GenerationAnalysisEntity.create_table()
     ProjectEntity.create_table()
-    FileEntity.create_table()
     APIKeyEntity.create_table()
     OrganizationEntity.create_table()
     SubscriptionEntity.create_table()

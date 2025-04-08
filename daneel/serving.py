@@ -7,7 +7,9 @@ import json
 import math
 import pathlib
 import textwrap
-import aiohttp
+from daneel.api import git_server
+from daneel.api.config import get_settings
+from daneel.api.resources import auth, feature, organization, project
 import opentelemetry.instrumentation.aiohttp_client
 import jwt
 import os
@@ -15,7 +17,7 @@ import shutil
 import tomllib
 import logging
 from uuid import uuid4
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from keycloak import KeycloakAdmin, KeycloakOpenIDConnection
 
 from daneel.data.graph_rag.code_indexing import ast_parse
@@ -23,6 +25,7 @@ from daneel.utils.glob_match import path_matches
 from daneel.utils.repo import clone_repo
 
 import opentelemetry.trace
+import fastapi.encoders
 
 from daneel.constants import MODEL
 from daneel.data.file_rpc import FileRPC
@@ -70,7 +73,10 @@ from daneel.data.postgres.models import (
     APIKeyEntity,
     ChatMessageEntity,
     ChatSessionEntity,
+    DBModel,
     FeatureEntity,
+    OrganizationEntity,
+    SubscriptionEntity,
     UserEntity,
     GenerationTraceEntity,
 )
@@ -217,20 +223,8 @@ async def get_inference_client_factory(organization, cache):
             create_openrouter_inference_client(model, api_key=config["key"]), cache
         )
 
+
 class BismuthCoreMixin:
-    def __init__(self):
-        self.jwkset = None
-        self.repos = {}
-        self.agents: Dict[str, Agent] = {}
-
-    async def initialize(self):
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                os.environ.get("KEYCLOAK_URL", "http://localhost:8543/realms/bismuth")
-                + "/protocol/openid-connect/certs"
-            ) as response:
-                self.jwkset = jwt.PyJWKSet.from_dict(await response.json())
-
     async def setup_request(
         self,
         user: UserEntity,
@@ -270,51 +264,45 @@ class BismuthCoreMixin:
 
     async def handle_auth(self, token: str, feature_id: str):
         logger.debug(f"Handling auth for feature_id: {feature_id}")
-        if token.startswith("BIS1-"):
-            logger.debug("Using API key authentication")
-            user = APIKeyEntity.find_by(token=token).user
+        settings = get_settings()
+        if settings.disable_auth:
+            user = UserEntity.get(1)
         else:
-            try:
-                logger.debug("Using JWT authentication")
-                kid = jwt.decode(token, options={"verify_signature": False})["kid"]
-                key = self.jwkset[kid]
-                decoded_jwt = jwt.decode(token, key=key, algorithms=["RS256"])
-                user = UserEntity.find_by(email=decoded_jwt["email"])
-            except jwt.PyJWTError as e:
-                logger.error(f"JWT Error: {str(e)}")
+            user = APIKeyEntity.find_by(token=token).user
+
+            if user is None:
+                logger.warning("User not found")
                 raise HTTPException(
                     status_code=3000, detail="Invalid authentication token"
                 )
 
-        if user is None:
-            logger.warning("User not found")
-            raise HTTPException(status_code=3000, detail="Invalid authentication token")
+            logger.debug(f"User authenticated: {user.id} ({user.email})")
 
-        logger.debug(f"User authenticated: {user.id} ({user.email})")
-
-        keycloak = KeycloakAdmin(
-            connection=KeycloakOpenIDConnection(
-                server_url=os.environ.get(
-                    "KEYCLOAK_URL", "http://localhost:8543/realms/bismuth"
-                ).replace("/realms/bismuth", ""),
-                username="",
-                password="",
-                realm_name="bismuth",
-                user_realm_name="bismuth",
-                client_id=os.environ.get("KEYCLOAK_ADMIN_CLIENT_ID", "api"),
-                client_secret_key=os.environ.get(
-                    "KEYCLOAK_ADMIN_CLIENT_SECRET", "secret"
-                ),
-                verify=True,
+            keycloak = KeycloakAdmin(
+                connection=KeycloakOpenIDConnection(
+                    server_url=os.environ.get(
+                        "KEYCLOAK_URL", "http://localhost:8543/realms/bismuth"
+                    ).replace("/realms/bismuth", ""),
+                    username="",
+                    password="",
+                    realm_name="bismuth",
+                    user_realm_name="bismuth",
+                    client_id=os.environ.get("KEYCLOAK_ADMIN_CLIENT_ID", "api"),
+                    client_secret_key=os.environ.get(
+                        "KEYCLOAK_ADMIN_CLIENT_SECRET", "secret"
+                    ),
+                    verify=True,
+                )
             )
-        )
-        kc_user = await keycloak.a_get_user(await keycloak.a_get_user_id(user.email))
-        if not kc_user.get("emailVerified"):
-            logger.warning(f"Email not verified: {user.email}")
-            raise HTTPException(
-                status_code=3003,
-                detail="You must verify your email before using Bismuth",
+            kc_user = await keycloak.a_get_user(
+                await keycloak.a_get_user_id(user.email)
             )
+            if not kc_user.get("emailVerified"):
+                logger.warning(f"Email not verified: {user.email}")
+                raise HTTPException(
+                    status_code=3003,
+                    detail="You must verify your email before using Bismuth",
+                )
 
         feature = FeatureEntity.get(feature_id)
         if feature is None:
@@ -566,8 +554,10 @@ class BismuthAPI(BismuthCoreMixin):
 
             nodes, contents, deferred_edges = ast_parse(
                 {
-                    file_name: content for file_name, content in repo_files.items()
-                    if not path_matches(file_name, block_globs) and len(content) < 1_000_000
+                    file_name: content
+                    for file_name, content in repo_files.items()
+                    if not path_matches(file_name, block_globs)
+                    and len(content) < 1_000_000
                 }
             )
 
@@ -989,12 +979,52 @@ async def lifespan(app):
     except Exception:
         pass
 
-    await bismuth_api.initialize()
+    settings = get_settings()
+    if settings.disable_auth and UserEntity.get(1) is None:
+        print("Creating default user")
+        with DBModel.db_manager().get_cursor() as cursor:
+            user = UserEntity(
+                email="user@bismuth.cloud",
+                username="user@bismuth.cloud",
+                name="User",
+            )
+            user.persist(cursor=cursor)
+
+            subscription = SubscriptionEntity(
+                type="INDIVIDUAL",
+                credits=1000,
+            )
+            subscription.persist(cursor=cursor)
+
+            organization = OrganizationEntity(
+                name=f"{user.name}'s Organization", subscription_id=subscription.id
+            )
+            organization.persist(cursor=cursor)
+
+        organization.add_user(user)
+
     yield
 
 
 app = FastAPI(lifespan=lifespan)
+app.include_router(auth.router, prefix="/auth")
+app.include_router(git_server.router, prefix="/git")
+app.include_router(organization.router, prefix="/organizations")
+app.include_router(
+    project.router, prefix="/organizations/{organization_id:int}/projects"
+)
+app.include_router(
+    feature.router,
+    prefix="/organizations/{organization_id:int}/projects/{project_id:int}/features",
+)
 app.include_router(bismuth_api.router)
+
+
+def db_model_encoder(obj: DBModel) -> Any:
+    return fastapi.encoders.jsonable_encoder(obj.to_json_dict())
+
+
+fastapi.encoders.encoders_by_class_tuples[db_model_encoder] = (DBModel,)
 
 # / is used for health check
 opentelemetry.instrumentation.fastapi.FastAPIInstrumentor().instrument_app(

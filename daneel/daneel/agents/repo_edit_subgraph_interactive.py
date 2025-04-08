@@ -8,6 +8,7 @@ from typing import Any, List
 from asimov.caches.cache import Cache
 from asimov.graph import (
     AgentModule,
+    CompositeModule,  # noqa
     ModuleConfig,
     ModuleType,
     Node,

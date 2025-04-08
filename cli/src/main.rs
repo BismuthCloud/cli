@@ -29,8 +29,6 @@ static GLOBAL_OPTS: OnceCell<cli::GlobalOpts> = OnceCell::new();
 #[derive(Debug, Serialize, Deserialize)]
 struct Config {
     api_url: String,
-    oidc_url: String,
-    daneel_url: String,
     organization_id: u64,
     token: String,
 }
@@ -673,39 +671,57 @@ async fn _main() -> Result<()> {
     if let cli::Command::Login = args.command {
         debug!("Starting login flow");
 
-        let api_url: Url = enter_with_default("Enter API URL", "http://localhost:8080")
+        let api_url: Url = enter_with_default("Enter API URL", "http://localhost:8765")
             .await?
             .parse()?;
 
-        let oidc_url: Url = enter_with_default("Enter Keycloak URL", "http://localhost:8543")
+        let auth_enabled: bool = reqwest::get(api_url.join("/auth/enabled").unwrap())
             .await?
-            .parse()?;
-
-        let daneel_url: Url = enter_with_default("Enter Daneel URL", "ws://localhost:8765")
-            .await?
-            .parse()?;
-
-        let token = oidc_server(&api_url, &oidc_url).await?;
-
-        let client = APIClient::new(&api_url, &token)?;
-        let user = client
-            .get("/auth/me")
-            .send()
-            .await?
-            .error_body_for_status()
-            .await?
-            .json::<api::User>()
+            .error_for_status()?
+            .json()
             .await?;
 
-        let organization = choice(&user.organizations, "organization").await?;
+        let config = if auth_enabled {
+            let oidc_url: Url = enter_with_default("Enter Keycloak URL", "http://localhost:8543")
+                .await?
+                .parse()?;
 
-        let config = Config {
-            api_url: api_url.to_string(),
-            oidc_url: oidc_url.to_string(),
-            daneel_url: daneel_url.to_string(),
-            token: token.to_string(),
-            organization_id: organization.id,
+            let token = oidc_server(&api_url, &oidc_url).await?;
+
+            let client = APIClient::new(&api_url, &token)?;
+            let user = client
+                .get("/auth/me")
+                .send()
+                .await?
+                .error_body_for_status()
+                .await?
+                .json::<api::User>()
+                .await?;
+
+            let organization = choice(&user.organizations, "organization").await?;
+            Config {
+                api_url: api_url.to_string(),
+                token: token.to_string(),
+                organization_id: organization.id,
+            }
+        } else {
+            let client = APIClient::new(&api_url, "")?;
+            let user = client
+                .get("/auth/me")
+                .send()
+                .await?
+                .error_body_for_status()
+                .await?
+                .json::<api::User>()
+                .await?;
+
+            Config {
+                api_url: api_url.to_string(),
+                token: "".to_string(),
+                organization_id: user.organizations[0].id,
+            }
         };
+
         let config_str = serde_json::to_string(&config)?;
         let mut config_file = File::create(&args.global.config_file).await?;
         config_file.write_all(config_str.as_bytes()).await?;
@@ -997,6 +1013,7 @@ async fn _main() -> Result<()> {
                     if let Err(e) = bismuth_toml::parse_config(&repo_path) {
                         return Err(anyhow!("Invalid bismuth.toml: {}", e));
                     }
+                    let ws_url = config.api_url.clone().replace("http", "ws");
 
                     start_chat(
                         &current_user,
@@ -1008,6 +1025,7 @@ async fn _main() -> Result<()> {
                         &client,
                         &config.daneel_url,
                         &daneel_client,
+                        &ws_url,
                     )
                     .await
                 }
