@@ -22,12 +22,7 @@ class VCSServiceClient:
 
     def create_repo(self, project_hash: str):
         repo_path = self.get_repo_path(project_hash)
-        repo = Repo.init(repo_path, initial_branch="main")
-
-        # Create initial commit
-        repo.index.commit(
-            "Initialized", author=self.COMMIT_AUTHOR, committer=self.COMMIT_AUTHOR
-        )
+        repo = Repo.init(repo_path, initial_branch="main", bare=True)
 
         # Configure receivepack
         with repo.config_writer() as git_config:

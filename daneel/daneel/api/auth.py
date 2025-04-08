@@ -38,7 +38,7 @@ def _initialize_jwk_set():
         _jwk_set = None
 
 
-def ensure_registered(email: str) -> UserEntity:
+def ensure_registered(email: str, token: str) -> UserEntity:
     """Ensures user is registered and has an organization with subscription"""
     user = UserEntity.find_by(email=email)
     if user is None:
@@ -47,11 +47,10 @@ def ensure_registered(email: str) -> UserEntity:
         userinfo_resp = httpx.get(
             os.environ.get("KEYCLOAK_URL", "http://localhost:8543/realms/bismuth")
             + "/protocol/openid-connect/userinfo",
-            headers={"Authorization": f"Bearer {user.token}"},
+            headers={"Authorization": f"Bearer {token}"},
         )
         userinfo_resp.raise_for_status()
         userinfo = userinfo_resp.json()
-        print(userinfo)
 
         with DBModel.db_manager().get_cursor() as cursor:
             user = UserEntity(
@@ -108,8 +107,10 @@ def get_current_user(
             token = authorization.split(" ", 1)[1]
             kid = jwt.get_unverified_header(token)["kid"]
             key = _jwk_set[kid]
-            decoded_jwt = jwt.decode(token, key=key, algorithms=["RS256"])
-            user = ensure_registered(decoded_jwt["email"])
+            decoded_jwt = jwt.decode(
+                token, key=key, algorithms=["RS256"], audience="account"
+            )
+            user = ensure_registered(decoded_jwt["email"], token)
             sentry_sdk.set_user(
                 {
                     "id": user.id,
