@@ -8,7 +8,6 @@ from daneel.data.postgres.models import ChatSessionEntity
 from daneel.data.file_rpc import FileRPC
 from daneel.executors.aci.visualization import ACIVisualizer
 import logging
-from text_unidecode import unidecode  # type: ignore
 from daneel.executors.aci.prompts import *
 
 from asimov.graph import AgentModule
@@ -46,7 +45,7 @@ LINES_IN_VIEW = 500
 LINES_IN_VIEW_CONSTRAINED = 2000
 RECURSION_LIMIT = 1
 
-GIT_HOST = os.environ.get("GIT_HOST", "localhost:8080")
+GIT_HOST = os.environ.get("GIT_HOST", "localhost:8765")
 
 
 class ACIExecutionMode(enum.Enum):
@@ -738,9 +737,9 @@ class ACI(AsimovBase):
                 except UnknownExtensionException:
                     pattern = SourceFile.WhitespacePattern()
 
-                text = unidecode(pattern.line_ending.join(viewer_lines))
-                normalized_search = unidecode(action.lines_to_replace)
-                normalized_replace = unidecode(action.replace_text)
+                text = pattern.line_ending.join(viewer_lines)
+                normalized_search = action.lines_to_replace
+                normalized_replace = action.replace_text
 
                 text = self.replace_closest_edit_distance(
                     text, normalized_search, normalized_replace
@@ -756,11 +755,9 @@ class ACI(AsimovBase):
                     new_content.extend(new_lines)
                     new_content.extend(end_chunk)
 
-                    normalized_file_content = pattern.line_ending.join(
-                        new_content
-                    ).rstrip()
+                    normalized_file_content = pattern.line_ending.join(new_content)
 
-                    output_modified_files[fn] = unidecode(normalized_file_content)
+                    output_modified_files[fn] = normalized_file_content
                 except Exception:
                     self._logger.exception(
                         f"Final whitespace normalization failed, falling back to basic normalization"
@@ -1464,7 +1461,6 @@ class ACI(AsimovBase):
             mode = self._mode
 
         input_task = self._input_task
-
 
         task_config = await self.cache.get("planned_task_config", {})
         prompt_extra = await self.cache.get("prompt_extra", {})

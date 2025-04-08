@@ -3,7 +3,10 @@ from asyncio import Semaphore
 from typing import Any
 
 from asimov.caches.cache import Cache
-from asimov.graph import AgentModule
+from asimov.graph import (
+    AgentModule,
+    CompositeModule,  # noqa
+)
 from asimov.services.inference_clients import ChatMessage, ChatRole, InferenceClient
 
 

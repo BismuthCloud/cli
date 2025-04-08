@@ -6,7 +6,10 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 import numpy as np
 from asimov.caches.cache import Cache
-from asimov.graph import AgentModule
+from asimov.graph import (
+    AgentModule,
+    CompositeModule,  # noqa
+)
 from asimov.services.inference_clients import (
     ChatMessage,
     ChatRole,
