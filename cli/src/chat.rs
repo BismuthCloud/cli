@@ -1543,87 +1543,6 @@ impl App {
         self.input.set_cursor_line_style(Style::default());
     }
 
-    fn levenshtein(a: &str, b: &str) -> usize {
-        let a_len = a.chars().count();
-        let b_len = b.chars().count();
-        if a_len == 0 {
-            return b_len;
-        }
-        if b_len == 0 {
-            return a_len;
-        }
-        let mut prev_row: Vec<usize> = (0..=b_len).collect();
-        let mut curr_row = vec![0; b_len + 1];
-        for (i, ca) in a.chars().enumerate() {
-            curr_row[0] = i + 1;
-            for (j, cb) in b.chars().enumerate() {
-                let cost = if ca == cb { 0 } else { 1 };
-                curr_row[j + 1] = std::cmp::min(
-                    std::cmp::min(curr_row[j] + 1, prev_row[j + 1] + 1),
-                    prev_row[j] + cost,
-                );
-            }
-            prev_row.clone_from_slice(&curr_row);
-        }
-        prev_row[b_len]
-    }
-
-    fn similarity_ratio(a: &str, b: &str) -> f64 {
-        let lev = App::levenshtein(a, b) as f64;
-        let max_len = a.chars().count().max(b.chars().count()) as f64;
-        if max_len == 0.0 {
-            return 1.0;
-        }
-        1.0 - lev / max_len
-    }
-
-    pub fn replace_closest_edit_distance(whole: &str, part: &str, replace: &str) -> Option<String> {
-        let whole_lines: Vec<&str> = whole.split('\n').collect();
-        let part_lines: Vec<&str> = part.split('\n').collect();
-        let replace_lines: Vec<&str> = replace.split('\n').collect();
-
-        let scale = 0.1;
-        let part_len = part_lines.len();
-        let min_len = ((part_len as f64) * (1.0 - scale)).floor() as usize;
-        let max_len = ((part_len as f64) * (1.0 + scale)).ceil() as usize;
-        let mut best_similarity = 0.0;
-        let mut best_start = 0;
-        let mut best_end = 0;
-        let target = part_lines.join("");
-
-        for length in min_len..=max_len {
-            if length == 0 {
-                continue;
-            }
-            for i in 0..=whole_lines.len().saturating_sub(length) {
-                let end = (i + length).min(whole_lines.len());
-                let chunk = whole_lines[i..end].join("");
-                let sim = App::similarity_ratio(&chunk, &target);
-                if sim > best_similarity {
-                    best_similarity = sim;
-                    best_start = i;
-                    best_end = end;
-                }
-            }
-        }
-
-        if best_similarity < 0.8 {
-            return None;
-        }
-
-        let mut modified_lines = Vec::new();
-        modified_lines.extend_from_slice(&whole_lines[..best_start]);
-        modified_lines.extend_from_slice(&replace_lines);
-        modified_lines.extend_from_slice(&whole_lines[best_end..]);
-        Some(modified_lines.join("\n"))
-    }
-    fn apply_fuzzy_file_edit(content: &str, search: &str, replace: &str) -> Result<String, String> {
-        match App::replace_closest_edit_distance(content, search, replace) {
-            Some(new_content) => Ok(new_content),
-            None => Err("No suitable chunk found with sufficient similarity".to_string()),
-        }
-    }
-
     async fn read_loop(
         read: &mut SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
         write: &mpsc::UnboundedSender<tokio_tungstenite::tungstenite::Message>,
@@ -2053,43 +1972,17 @@ impl App {
                                 .iter()
                                 .map(|edit| {
                                     let path = repo_path.join(&edit.path);
-                                    let content_res = std::fs::read_to_string(&path);
-
-                                    match content_res {
+                                    match std::fs::write(&path, &edit.replace) {
+                                        Ok(_) => FileRPCWriteActionResult {
+                                            success: true,
+                                            path: edit.path.clone(),
+                                            message: None,
+                                        },
                                         Err(e) => FileRPCWriteActionResult {
                                             success: false,
                                             path: edit.path.clone(),
                                             message: Some(e.to_string()),
                                         },
-                                        Ok(content) => {
-                                            let new_content_res = App::apply_fuzzy_file_edit(
-                                                &content,
-                                                &edit.search,
-                                                &edit.replace,
-                                            );
-
-                                            match new_content_res {
-                                                Err(e) => FileRPCWriteActionResult {
-                                                    success: false,
-                                                    path: edit.path.clone(),
-                                                    message: Some(e),
-                                                },
-                                                Ok(new_content) => {
-                                                    match std::fs::write(&path, new_content) {
-                                                        Ok(_) => FileRPCWriteActionResult {
-                                                            success: true,
-                                                            path: edit.path.clone(),
-                                                            message: None,
-                                                        },
-                                                        Err(e) => FileRPCWriteActionResult {
-                                                            success: false,
-                                                            path: edit.path.clone(),
-                                                            message: Some(e.to_string()),
-                                                        },
-                                                    }
-                                                }
-                                            }
-                                        }
                                     }
                                 })
                                 .collect();

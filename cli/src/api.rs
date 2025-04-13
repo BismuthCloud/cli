@@ -401,7 +401,6 @@ pub mod ws {
     #[derive(Debug, Deserialize, Clone)]
     pub struct FileEdit {
         pub path: String,
-        pub search: String,
         pub replace: String,
     }
 

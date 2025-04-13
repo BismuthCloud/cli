@@ -911,6 +911,12 @@ async fn _main() -> Result<()> {
             };
             let (project, feature) = get_project_and_feature_for_repo(&client, &repo_path).await?;
 
+            let mut url: Url = Url::parse(&config.daneel_url)?;
+
+            url.set_scheme("https").unwrap();
+
+            let daneel_client = APIClient::new(&url, "")?;
+
             match command {
                 None => {
                     let repo_path = match repo {
@@ -1001,6 +1007,7 @@ async fn _main() -> Result<()> {
                         &repo_path,
                         &client,
                         &config.daneel_url,
+                        &daneel_client,
                     )
                     .await
                 }
