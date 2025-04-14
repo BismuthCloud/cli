@@ -1,14 +1,13 @@
 import asyncio
-import logging
 import os
 import tempfile
-from pathlib import Path
-
 from git import Repo
+from pathlib import Path
+import logging
 
 from daneel.data.postgres.models import FeatureEntity
 
-GIT_HOST = os.environ.get("GIT_HOST", "localhost:8765")
+GIT_HOST = os.environ.get("GIT_HOST", "localhost:8080")
 
 
 def get_clone_url(feature: FeatureEntity) -> str:
@@ -29,6 +28,5 @@ async def clone_repo(feature: FeatureEntity) -> Path:
         branch=feature.name,
         depth=1,
     )
-    del os.environ["GIT_LFS_SKIP_SMUDGE"]
 
     return Path(repo_path)

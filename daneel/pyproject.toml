@@ -22,7 +22,7 @@ classifiers = [
   "Programming Language :: Python :: Implementation :: PyPy",
 ]
 dependencies = [
-  "asimov-agents @ git+https://github.com/BismuthCloud/asimov",
+  "asimov-agents @ git+https://github.com/BismuthCloud/asimov@ian/generic_tool_parsing",
   "tree-sitter-language-pack==0.2.0",  # Pre-built packages maintained on bismuth-pypi.s3-website-us-west-2.amazonaws.com, built with dumb-pypi
   "aiohttp==3.10.9",
   "opentelemetry-instrumentation-aiohttp-client==0.52b0",
@@ -46,6 +46,7 @@ dependencies = [
   "numpy==2.2.3",
   "python-keycloak==5.1.1",
   "pydantic-settings==2.8.1",
+  "gasp-py==0.10.1"
 ]
 [project.optional-dependencies]
 dev = [

@@ -1,0 +1,161 @@
+object FileCreate {
+    thoughts: String @description("Your thoughts about the change you are making given the state of the system. These should detail why this change is moving you closer to completing the task as stated in the users prompt.")
+    step: String @description("An english description of the change you are making. This helps document the purpose of the file creation.")
+    file: String @description("The name of the file you are creating.")
+    content: String @description("The contents that will be written to the file.")
+}
+
+object FileDelete {
+    step: String @description("An english description of the change you are making. This helps document the purpose of the deletion.")
+    file_id: String @description("The numeric identifier of the file to delete, as displayed next to the file path within the <files> tags. Each open file has a unique ID that persists throughout the editing session.")
+}
+
+object FileEdit {
+    thoughts: String @description("Your thoughts about the change you are making given the state of the system. These should detail why this change is moving you closer to completing the task as stated in the users prompt.")
+    file_id: Number @description("The id of the file you want to edit as shown next to the file path between the <files> tags.")
+    step: String @description("An english description of the change you are making. This helps document the purpose of the edit.")
+    file: String @description("The name of the file you are editing.")
+    lines_to_replace: String @description("The exact content of the lines of text to be replaced. These lines must exist within the content currently in the viewer state. Whitespace and linebreaks must be the same. Do not include the line number.")
+    replace_text: String @description("The content of the lines of text doing the replacing. This field is absolutely required and contains the new content that will replace the specified lines. Do not include the line number.")
+    id: String @description("A unique id representing the edit. This allows for tracking and referencing specific changes.")
+}
+
+object CreateFiles {
+    creates: FileCreate[]
+}
+
+object EditFiles {
+    edits: FileEdit[]
+}
+
+object DeleteFiles {
+    deletes: FileDelete[]
+}
+
+object OpenFile {
+    file: String @description("The path to the file you wish to open, these can be determined through the 'list_files' command.")
+}
+
+object SwitchFile {
+    file_id: String @description("The id of the file you want to switch to as shown next to the file path between the <files> tags.")
+}
+
+object CloseFile {
+    file_id: String @description("The numeric identifier of the file to close, as displayed next to the file path within the <files> tags. Each open file has a unique ID that persists throughout the editing session.")
+}
+
+object ListFiles {
+    subpath: String @description("The directory subpath you want to list files under.")
+}
+
+object Finalize {
+    placeholder: String
+}
+
+object SwitchToEditingMode {
+    goal: String @description("What you want the editing system to accomplish before returning control to you. Be detailed, it should be step by step.")
+}
+
+object SwitchToNavigationMode {
+    goal: String @description("What you want the navigation system to accomplish before returning control to you. Be detailed, it should be step by step.")
+}
+
+object ToggleCommandRunningTool {
+    placeholder: String
+}
+
+object ToggleBuildLintTestRunningTool {
+    placeholder: String
+}
+
+object SwitchToDebugMode {
+    goal: String @description("What you want the debugging system to accomplish before returning control to you. Be detailed, it should be step by step.")
+}
+
+object SwitchToDriverMode {
+    results: String @description("Thoughts about the results of your current goal that you want to communicate to the driver system as you return control.")
+}
+
+object AnalyzeSystem {
+    focus: String @description("The specific aspect or issue you want to analyze. This helps direct the analysis to relevant parts of the system.")
+}
+
+object ScrollDownFile {
+   scroll: Number @description("Number of lines to move downward in the file. Must be positive integer")
+}
+
+object ScrollUpFile {
+   scroll: Number @description("Number of lines to move upward in the file. Must be positive integer") 
+}
+
+object GoToDef {
+   symbol: String @description("Name of the function or class to navigate to")
+   line: String @description("Line number of current file referencing the symbol")
+}
+
+object FindReferences {
+   symbol: String @description("Name of the function or class to find references for")
+   line: String @description("Line number of current file referencing the symbol")
+}
+
+object RunTests {
+   test_names: String[] @description("Array of test names to execute from the test suite")
+}
+
+object ReachOutToHuman {
+   message: String @description("Message to send to human requesting assistance")
+}
+
+object RunBuildLintTests {
+   specific_goal: String @description("Goal to achieve for test/build running - building project, running tests, linting files etc")
+}
+
+object ReportBug {
+   file: String @description("File containing the bug")
+   lines_to_replace: String @description("Exact content of lines to replace, matching whitespace and linebreaks")
+   replace_text: String @description("New content to replace specified lines")
+   bug_description: String @description("Detailed bug description with markdown formatting")
+}
+
+object PopGoToDef {
+    placeholder: String
+}
+
+object AnalyzeCode {
+    placeholder: String
+}
+
+object AddQuestion {
+   question: String @description("Question to be answered based on current codebase understanding")
+}
+
+object ResolveQuestion {
+   question_id: Number @description("ID of question to resolve")
+   answer: String @description("Answer to the question being resolved")
+}
+
+object AddMemory {
+   memory: String @description("Non-obvious fact found during exploration, with relevant context")
+}
+
+object ShowSkeleton {
+    interesting_files: String[] @description("List of interesting files whose skeletons will be shown - includes class and function declarations/prototypes")
+}
+
+object SymbolSearch {
+    query: String @description("Query describing symbol functionality in plain English, e.g. 'function that reads a file'")
+}
+
+object FindPhrase {
+    exact_match_phrase: String @description("Phrase to search for exact case sensitive matches across codebase")
+}
+
+object GoToLine {
+    line_num: Number @description("Line number to jump to in current active file")
+}
+
+object RunCommand {
+    command: String @description("The command you would like to execute in the user's shell")
+}
+
+union ConstrainedToolCall = CreateFiles | EditFiles | DeleteFiles | OpenFile | SwitchFile | ListFiles | Finalize | RunCommand | AnalyzeCode;

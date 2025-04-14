@@ -9,16 +9,18 @@ from daneel.data.file_rpc import FileRPC
 from daneel.executors.aci.visualization import ACIVisualizer
 import logging
 from daneel.executors.aci.prompts import *
+from pathlib import Path
 
 from asimov.graph import AgentModule
 from asimov.services.inference_clients import InferenceClient
 from difflib import SequenceMatcher
+from gasp import WAILGenerator
 
 import os
 from pydantic import Field, PrivateAttr
 from jinja2 import Template
 
-from typing import Any, Awaitable, Callable, Iterable, Optional
+from typing import Any, Awaitable, Callable, Iterable, Optional, Literal
 from asimov.caches.cache import Cache
 import textwrap
 
@@ -35,6 +37,9 @@ from daneel.utils.websockets import (
     ACIMessage,
     WSMessage,
     WSMessageType,
+    FileEdit,
+    FileCreate,
+    FileDelete,
     null_recv_callback,
     null_send_callback,
 )
@@ -65,6 +70,7 @@ class ACI(AsimovBase):
     recursion_depth: int = Field(default=0)
     finalized: bool = Field(default=False)
     mode: ACIExecutionMode = Field(default=ACIExecutionMode.SINGLE)
+    unstructured: bool = Field(default=False)
     _input_task: str = PrivateAttr()
     _step_count: int = PrivateAttr()
     _pinned_files: dict[str, str] = PrivateAttr(default_factory=dict)
@@ -75,6 +81,7 @@ class ACI(AsimovBase):
     _last_ran_tests: int = PrivateAttr(default=0)
     _mode: ACIMode = PrivateAttr(default=ACIMode.CONSTRAINED)
     _logger: logging.Logger = PrivateAttr()
+    _schema_parser: WAILGenerator = PrivateAttr()
 
     tool_schemas: dict[str, dict[str, Any]] = {
         "switch_file": {
@@ -91,81 +98,128 @@ class ACI(AsimovBase):
                 "required": ["file_id"],
             },
         },
-        "create_file": {
-            "name": "create_file",
-            "description": "Creates a new file with the contents you specify and switches to the file in the viewer.",
+        "create_files": {
+            "name": "create_files",
+            "description": "Creates one or many new files with the contents you specify opening all files created for editing. This operation is useful for generating new files or templates to support the completion of a task. The last file created will be set to the active file for editing.",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "thoughts": {
-                        "type": "string",
-                        "description": "Your thoughts about the change you are making given the state of the system. These should detail why this change is moving you closer to completing the task as stated in the users prompt.",
+                    "creates": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "thoughts": {
+                                    "type": "string",
+                                    "description": "Your thoughts about the change you are making given the state of the system. These should detail why this change is moving you closer to completing the task as stated in the users prompt.",
+                                },
+                                "step": {
+                                    "type": "string",
+                                    "description": "An english description of the change you are making. This helps document the purpose of the file creation.",
+                                },
+                                "file": {
+                                    "type": "string",
+                                    "description": "The name of the file you are creating.",
+                                },
+                                "content": {
+                                    "type": "string",
+                                    "description": "The contents that will be written to the file.",
+                                },
+                            },
+                            "required": [
+                                "thoughts",
+                                "file",
+                                "step",
+                                "content",
+                            ],
+                        }
                     },
-                    "step": {
-                        "type": "string",
-                        "description": "An english description of the change you are making. This helps document the purpose of the file creation.",
-                    },
-                    "file": {
-                        "type": "string",
-                        "description": "The name of the file you are creating.",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "The contents that will be written to the file.",
+                },
+                "required": ["creates"]
+            },
+        },
+        "edit_files": {
+            "name": "edit_files",
+            "description": "Performs a targeted replacement of specified text within a file or set of files. This operation allows you to identify specific lines of text and replace them with new content while maintaining a file's structure. Each edit is tracked with a unique identifier and includes a human-readable description of the change being made. This operation is useful for making precise modifications to configuration files, source code, or any text-based document where specific lines need to be updated.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "edits": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": [
+                                "thoughts",
+                                "file",
+                                "lines_to_replace",
+                                "step",
+                                "replace_text",
+                                "id",
+                                "file_id",
+                            ],
+                            "properties": {
+                                "thoughts": {
+                                    "type": "string",
+                                    "description": "Your thoughts about the change you are making given the state of the system. These should detail why this change is moving you closer to completing the task as stated in the users prompt.",
+                                },
+                                "file_id": {
+                                    "type": "number",
+                                    "description": "The id of the file you want to edit as shown next to the file path between the <files> tags.",
+                                },
+                                "step": {
+                                    "type": "string",
+                                    "description": "An english description of the change you are making. This helps document the purpose of the edit.",
+                                },
+                                "file": {
+                                    "type": "string",
+                                    "description": "The name of the file you are editing.",
+                                },
+                                "lines_to_replace": {
+                                    "type": "string",
+                                    "description": "The exact content of the lines of text to be replaced. These lines must exist within the content currently in the viewer state. Whitespace and linebreaks must be the same. Do not include the line number.",
+                                },
+                                "replace_text": {
+                                    "type": "string",
+                                    "description": "The content of the lines of text doing the replacing. This field is absolutely required and contains the new content that will replace the specified lines. Do not include the line number.",
+                                },
+                                "id": {
+                                    "type": "string",
+                                    "description": "A unique id representing the edit. This allows for tracking and referencing specific changes.",
+                                },
+                            },
+                        },
                     },
                 },
                 "required": [
-                    "thoughts",
-                    "file",
-                    "step",
-                    "content",
+                    "edits",
                 ],
             },
         },
-        "edit_file": {
-            "name": "edit_file",
-            "description": "Performs a targeted replacement of specified text within a file, for lines in the current viewer state. This operation allows you to identify specific lines of text and replace them with new content while maintaining the file's structure. Each edit is tracked with a unique identifier and includes a human-readable description of the change being made. This operation is useful for making precise modifications to configuration files, source code, or any text-based document where specific lines need to be updated.",
+        "delete_files": {
+            "name": "delete_files",
+            "description": "Delete one or many currently open files. This action is permanent, you must recreate the files if you wish to work on them again. Because this action is destructive you may only delete files that are currently open.",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "thoughts": {
-                        "type": "string",
-                        "description": "Your thoughts about the change you are making given the state of the system. These should detail why this change is moving you closer to completing the task as stated in the users prompt.",
-                    },
-                    "file_id": {
-                        "type": "number",
-                        "description": "The id of the file you want to switch to as shown next to the file path between the <files> tags.",
-                    },
-                    "step": {
-                        "type": "string",
-                        "description": "An english description of the change you are making. This helps document the purpose of the edit.",
-                    },
-                    "file": {
-                        "type": "string",
-                        "description": "The name of the file you are editing.",
-                    },
-                    "lines_to_replace": {
-                        "type": "string",
-                        "description": "The exact content of the lines of text to be replaced. These lines must exist within the content currently in the viewer state. Whitespace and linebreaks must be the same. Do not include the line number.",
-                    },
-                    "replace_text": {
-                        "type": "string",
-                        "description": "The content of the lines of text doing the replacing. This field is absolutely required and contains the new content that will replace the specified lines. Do not include the line number.",
-                    },
-                    "id": {
-                        "type": "string",
-                        "description": "A unique id representing the edit. This allows for tracking and referencing specific changes.",
+                    "deletes": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "step": {
+                                    "type": "string",
+                                    "description": "An english description of the change you are making. This helps document the purpose of the deletion.",
+                                },
+                                "file_id": {
+                                    "type": "number",
+                                    "description": "The numeric identifier of the file to delete, as displayed next to the file path within the <files> tags. Each open file has a unique ID that persists throughout the editing session.",
+                                },
+                            },
+                            "required": ["file_id", "step"],
+                        } 
                     },
                 },
-                "required": [
-                    "thoughts",
-                    "file",
-                    "lines_to_replace",
-                    "step",
-                    "replace_text",
-                    "id",
-                    "file_id",
-                ],
+                "required": ["deletes"]
             },
         },
         "close_file": {
@@ -180,24 +234,6 @@ class ACI(AsimovBase):
                     }
                 },
                 "required": ["file_id"],
-            },
-        },
-        "delete_file": {
-            "name": "delete_file",
-            "description": "Deletes the currently open file from the project. This action is permanent, you must recreate the file if you wish to work on it again.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "step": {
-                        "type": "string",
-                        "description": "An english description of the change you are making. This helps document the purpose of the edit.",
-                    },
-                    "file_id": {
-                        "type": "number",
-                        "description": "The numeric identifier of the file to delete, as displayed next to the file path within the <files> tags. Each open file has a unique ID that persists throughout the editing session.",
-                    },
-                },
-                "required": ["file_id", "step"],
             },
         },
         "open_file": {
@@ -278,7 +314,31 @@ class ACI(AsimovBase):
     ):
         return {}
 
+    def _template_root(self):
+        template_root = Path(__file__).parent / "prompts" / "wail"
+        return template_root
+
+    def _unstructured_prompts(self):
+        def template_path(path_str):
+            template_root = self._template_root()
+            return template_root.joinpath(path_str)
+
+        prompts = {
+            ACIMode.CONSTRAINED: template_path("constrained.wail"),
+        }
+
+        for k,v in prompts.items():
+            with open(v, "r") as f:
+                content = f.read()
+            
+            prompts[k] = content
+
+        return prompts
+
     def prompts(self) -> dict[ACIMode, str]:
+        if self.unstructured:
+            return self._unstructured_prompts()
+
         prompts = {
             ACIMode.CONSTRAINED: CONSTRAINED_PROMPT,
         }
@@ -358,9 +418,9 @@ class ACI(AsimovBase):
     async def toolsets(self) -> dict[ACIMode, list[Any]]:
         sets = {
             ACIMode.CONSTRAINED: [
-                (self.edit_file, self.tool_schemas["edit_file"]),
-                (self.create_file, self.tool_schemas["create_file"]),
-                (self.delete_file, self.tool_schemas["delete_file"]),
+                (self.edit_files, self.tool_schemas["edit_files"]),
+                (self.create_files, self.tool_schemas["create_files"]),
+                (self.delete_files, self.tool_schemas["delete_files"]),
                 (self.open_file, self.tool_schemas["open_file"]),
                 (self.switch_file, self.tool_schemas["switch_file"]),
                 (self.list_files, self.tool_schemas["list_files"]),
@@ -480,6 +540,7 @@ class ACI(AsimovBase):
         interactive_mode=False,
         driver_mode=ACIMode.CONSTRAINED,
         initial_turns=3,
+        unstructured=False,
     ) -> "ACI":
         if send_message_callback is None:
 
@@ -498,6 +559,7 @@ class ACI(AsimovBase):
             file_rpc=file_rpc,
             driver_mode=driver_mode,
             initial_turns=initial_turns,
+            unstructured=unstructured,
         )
         instance._logger = logging.getLogger("ACI").getChild(
             await cache.get("request_id")
@@ -522,9 +584,9 @@ class ACI(AsimovBase):
         if (
             action
             in (
-                "create_file",
-                "edit_file",
-                "delete_file",
+                "create_files",
+                "edit_files",
+                "delete_files",
             )
             and self.mode.value == ACIExecutionMode.SINGLE.value
         ):
@@ -749,6 +811,7 @@ class ACI(AsimovBase):
                     self._turns_remaining += 1
                     return "Tried fuzzy replace and was not able to find a match, please double check the lines you are trying to replace."
 
+                # Use normalize
                 # Use normalized versions for replacement with consistent whitespace patterns
                 try:
                     new_lines = text.split(pattern.line_ending)
@@ -891,7 +954,7 @@ class ACI(AsimovBase):
 
         thoughts = await self.cache.get("driver_subsystem_communications", "")
 
-        toolset = (await self.toolsets())[self._mode]
+        toolset = (await self.toolsets())[ACIMode.CONSTRAINED]
 
         tool_names = "|".join([tool[1]["name"] for tool in toolset]) + "\n"
 
@@ -918,91 +981,138 @@ class ACI(AsimovBase):
 
         return viewer_state
 
-    async def edit_file(self, resp):
+    async def edit_files(self, resp):
         cache = self.cache
+        active_file = await cache.get("active_file", "")
+        active_file_content = None
 
-        passed, failing_key = self.validate_llm_call(
-            resp, self.tool_schemas["edit_file"]["input_schema"]
-        )
-
-        if not passed:
+        if not resp.get("edits"):
             self._turns_remaining += 1
-            return f"{failing_key} is required for 'edit_file', please try again with the correct parameters."
+            return "You must provide edits to make."
 
-        id = resp["id"]
-        step = resp["step"]
-        file = resp["file"]
-        lines_to_replace = resp["lines_to_replace"]
-        replace_text = resp["replace_text"]
+        edits = resp["edits"]
+        local_edits = []
+        passing = True
+        error_messages = []
 
-        active_file = await cache.get("active_file")
+        for i, edit in enumerate(edits):
+            passed, failing_key = self.validate_llm_call(
+                edit, self.tool_schemas["edit_files"]["input_schema"]["properties"]["edits"]["items"]
+            )
+            lines_to_replace = edit["lines_to_replace"]
+            replace_text = edit["replace_text"]
 
-        if lines_to_replace.strip() == "BISMUTH_DELETED_FILE":
+            passing = passing and passed
+
+            if not passed:
+                error_messages.append(f"{failing_key} for item at index {i} in the items array is required for 'edit_files', please try again with the correct parameters.")
+
+            if lines_to_replace.strip() == "BISMUTH_DELETED_FILE":
+                passing = False
+                error_messages.append("File at index {i} in the items array has been previously deleted you either need to recreate it or create an entirely new file.")
+
+            if not lines_to_replace.strip():
+                passing = False
+                error_messages.append("'lines_to_replace' at index {i} in the items array is missing or empty. You must provide content in the lines to replace.")
+
+        if not passing:
+            print("Not passing edits returning")
             self._turns_remaining += 1
-            return "That file has been previously deleted you either need to recreate it or create an entirely new file."
+            return "\n".join(error_messages)
 
-        if not lines_to_replace.strip():
-            self._turns_remaining += 1
-            return "You must provide content in the lines to replace."
+        print("after error")
 
-        lines_to_replace = lines_to_replace.rstrip()
-        replace_text = replace_text.rstrip()
-        if active_file != file:
+        last_edited_files = await cache.get("last_edited_files", [])
+
+        compound_state = []
+        for i, edit in enumerate(edits):
+            id = edit["id"]
+            step = edit["step"]
+            file = edit["file"]
+            lines_to_replace = edit["lines_to_replace"]
+            replace_text = edit["replace_text"]
+
+
+            lines_to_replace = lines_to_replace.rstrip()
+            replace_text = replace_text.rstrip()
             output_modified_files = await cache.get("output_modified_files", {})
             open_files = await cache.get("viewer_open_files", [])
             if (
-                file not in output_modified_files
-                or output_modified_files[file] == "BISMUTH_DELETED_FILE"
+                file not in open_files
+                or output_modified_files.get(file) == "BISMUTH_DELETED_FILE"
             ):
                 self._turns_remaining += 1
-                return "That file was deleted or closed, please switch to a different file."
+                return f"File {file} was deleted or closed, can only edit existing, open files."
 
-            await self.switch_file({"file_id": open_files.index(file)})
+            try:
+                action = EditAction(
+                    lines_to_replace=lines_to_replace,
+                    replace_text=replace_text,
+                    file=file,
+                )
+                print("Edit: Before manip")
+                content = await self.manipulate(action, file)
+                compound_state.append(content)
+                print("Edit: After manip")
 
-        try:
-            action = EditAction(
-                lines_to_replace=lines_to_replace,
-                replace_text=replace_text,
-                file=file,
+                if file == active_file:
+                    active_file_content = content
+            except ValueError as e:
+                self._logger.exception(f"Error in manipulate(EditAction)")
+                return str(e)
+
+            session_id = await cache.get("msg_session_id")
+            chat_session = ChatSessionEntity.get(session_id)
+            assert chat_session is not None
+            session_context = chat_session.get_context()
+
+            context_edited_files = session_context.get("edited_files", [])
+            context_edited_files.append(
+                {
+                    "file": file,
+                    "step": step,
+                }
             )
-            content = await self.manipulate(action, active_file)
-        except ValueError as e:
-            self._logger.exception(f"Error in manipulate(EditAction)")
-            return str(e)
 
-        session_id = await cache.get("msg_session_id")
-        chat_session = ChatSessionEntity.get(session_id)
-        assert chat_session is not None
-        session_context = chat_session.get_context()
+            session_context["edited_files"] = context_edited_files
+            chat_session.set_context(session_context)
 
-        context_edited_files = session_context.get("edited_files", [])
-        context_edited_files.append(
-            {
-                "file": active_file,
-                "step": step,
-            }
-        )
+            locators = await cache.get("locators")
+            locators.append(
+                {
+                    "id": id,
+                    "file": file,
+                    "step": step,
+                    "lines_to_replace": lines_to_replace,
+                    "replace": replace_text,
+                }
+            )
+            await self.update_change_log(step)
 
-        session_context["edited_files"] = context_edited_files
-        chat_session.set_context(session_context)
+            last_edited_files.append(file)
 
-        locators = await cache.get("locators")
-        locators.append(
-            {
-                "id": id,
-                "file": active_file,
-                "step": step,
-                "lines_to_replace": lines_to_replace,
-                "replace": replace_text,
-            }
-        )
-        await self.update_change_log(step)
+            await cache.set("locators", locators)
 
-        await cache.set("locators", locators)
+        await cache.set("last_edited_files", last_edited_files)
 
-        return content
+        print("Edit: before RPC")
+        output_modified_files = await cache.get("output_modified_files", {})
 
-    async def switch_file(self, resp):
+        # Just try to grab the file raw, I'd rather this error if somehow it wasn't applied than nuke a local file for the user
+        local_edits.append(FileEdit(path=file, replace=output_modified_files[file]))
+        results = await self.file_rpc.edit(local_edits)
+        print("Edit: after RPC")
+
+        for result in results:
+            if not result.success:
+                print(f"Failed to apply edit file locally to {result.path} with error {result.message}.")
+
+        if active_file_content:
+            return "\n".join(compound_state)
+        else:
+            return "Files have been edited."
+
+    async def switch_file(self, resp: dict[str, Any]) -> str:
         passed, failing_key = self.validate_llm_call(
             resp, self.tool_schemas["switch_file"]["input_schema"]
         )
@@ -1034,7 +1144,7 @@ class ACI(AsimovBase):
 
         return content
 
-    async def open_file(self, resp) -> str:
+    async def open_file(self, resp: dict[str, Any]) -> str:
         cache = self.cache
 
         passed, failing_key = self.validate_llm_call(
@@ -1072,7 +1182,7 @@ class ACI(AsimovBase):
 
         return content
 
-    async def symbol_search(self, resp) -> str:
+    async def symbol_search(self, resp: dict[str, Any]) -> str:
         cache = self.cache
 
         query = resp["query"]
@@ -1159,7 +1269,7 @@ class ACI(AsimovBase):
 
         return sorted(list(children))
 
-    async def list_files(self, resp) -> str:
+    async def list_files(self, resp: dict[str, Any]) -> str:
         cache = self.cache
 
         await self.send_aci_status("Listing files in the repository...")
@@ -1189,7 +1299,7 @@ class ACI(AsimovBase):
 
         return content
 
-    async def finalize(self, resp) -> str:
+    async def finalize(self, resp: dict[str, Any]) -> str:
         self._logger.debug("Finalizing...")
         cache = self.cache
         open_files = await cache.get("viewer_open_files", [])
@@ -1219,7 +1329,7 @@ class ACI(AsimovBase):
         change_log.append(change)
         await cache.set("change_log", change_log)
 
-    async def close_file(self, resp) -> str:
+    async def close_file(self, resp: dict[str, Any]) -> str:
         cache = self.cache
 
         passed, failing_key = self.validate_llm_call(
@@ -1279,82 +1389,106 @@ class ACI(AsimovBase):
             )
             return ""
 
-    async def delete_file(self, resp) -> str:
-        passed, failing_key = self.validate_llm_call(
-            resp, self.tool_schemas["delete_file"]["input_schema"]
-        )
-        if not passed:
-            return f"{failing_key} is required for 'delete', please try again with the correct parameters."
+    async def delete_files(self, resp) -> str:
+        deletes = resp["deletes"]
 
-        file_id = int(resp["file_id"])
+        passing = True
+        error_messages = []
         cache = self.cache
         open_files = await cache.get("viewer_open_files", [])
-        active_file = await cache.get("active_file")
 
-        if file_id >= len(open_files) or file_id < 0:
-            files_with_id = []
-            for idx, file in enumerate(open_files):
-                files_with_id.append(f"{idx}: {file}")
-            return "Invalid file id. Valid files are:\n" + "\n".join(files_with_id)
-
-        if open_files[file_id] == "CLOSED":
-            return "That file is already closed, please take a new action."
-
-        if open_files[file_id] != active_file:
-            return "You may only delete the active file, please switch to the file you would like to delete."
-
-        self._logger.debug(f"DELETE {open_files[file_id]}")
-
-        modified_files = await cache.get("output_modified_files", {})
-
-        fn = open_files[file_id]
-
-        modified_files[fn] = "BISMUTH_DELETED_FILE"
-
-        async with cache.with_suffix(f"file_edit_selection_{fn}"):
-            await cache.delete("lines_above")
-            await cache.delete("lines_below")
-            await cache.delete("index")
-            await cache.delete("lines")
-
-        await cache.set("output_modified_files", modified_files)
-
-        open_files[file_id] = "CLOSED"
-
-        await self.update_change_log(resp["step"])
-        await cache.set("viewer_open_files", open_files)
-
-        await self.send_message_callback(
-            WSMessage(
-                type=WSMessageType.ACI,
-                aci=ACIMessage(
-                    action=ACIMessage.Action.CLOSE,
-                    status=f"Deleted {fn}",
-                ),
+        for i, delete in enumerate(deletes):
+            passed, failing_key = self.validate_llm_call(
+                delete, self.tool_schemas["delete_files"]["input_schema"]["properties"]["deletes"]["items"]
             )
-        )
+            
+            passing = passing and passed
 
-        try:
-            new_active_fn = next((fn for fn in open_files if fn != "CLOSED"))
-        except StopIteration:
-            self._logger.warning(
-                "No next file, likely deleted placeholder_file first in new project."
+            if not passed:
+                error_messages.append(f"{failing_key} for item at index {i} is required for 'delete_files', please try again with the correct parameters.")
+
+            file_id = int(delete["file_id"])
+            if file_id >= len(open_files) or file_id < 0:
+                files_with_id = []
+                for idx, file in enumerate(open_files):
+                    files_with_id.append(f"{idx}: {file}")
+                error_messages.append(f"Invalid file id {file_id} for element {i}. Valid files are:\n" + "\n".join(files_with_id))
+                passing = False
+
+            if open_files[file_id] == "CLOSED":
+                error_messages.append(f"File {file_id} at array element {i} is already closed.")
+                passing = False
+
+
+        if not passing:
+            self._turns_remaining += 1
+            return "\n".join(error_messages)
+        
+        new_active_fn = None
+        local_deletes = []
+
+        for i, delete in enumerate(deletes):
+            file_id = int(delete["file_id"])
+
+            self._logger.debug(f"DELETE {open_files[file_id]}")
+
+            modified_files = await cache.get("output_modified_files", {})
+
+            fn = open_files[file_id]
+
+            modified_files[fn] = "BISMUTH_DELETED_FILE"
+
+            async with cache.with_suffix(f"file_edit_selection_{fn}"):
+                await cache.delete("lines_above")
+                await cache.delete("lines_below")
+                await cache.delete("index")
+                await cache.delete("lines")
+
+            await cache.set("output_modified_files", modified_files)
+
+            open_files[file_id] = "CLOSED"
+
+            await self.update_change_log(delete["step"])
+            await cache.set("viewer_open_files", open_files)
+
+            await self.send_message_callback(
+                WSMessage(
+                    type=WSMessageType.ACI,
+                    aci=ACIMessage(
+                        action=ACIMessage.Action.CLOSE,
+                        status=f"Deleted {fn}",
+                    ),
+                )
             )
-            return ""
 
-        session_id = await cache.get("msg_session_id")
-        chat_session = ChatSessionEntity.get(session_id)
-        assert chat_session is not None
-        session_context = chat_session.get_context()
-        context_deleted_files = session_context.get("deleted_files", [])
-        context_deleted_files.append(fn)
+            local_deletes.append(FileDelete(path=fn))
 
-        session_context["deleted_files"] = context_deleted_files
-        chat_session.set_context(session_context)
+            try:
+                new_active_fn = next((fn for fn in open_files if fn != "CLOSED"))
+            except StopIteration:
+                self._logger.warning(
+                    "No next file, likely deleted placeholder_file first in new project."
+                )
+                return ""
+
+            session_id = await cache.get("msg_session_id")
+            chat_session = ChatSessionEntity.get(session_id)
+            assert chat_session is not None
+            session_context = chat_session.get_context()
+            context_deleted_files = session_context.get("deleted_files", [])
+            context_deleted_files.append(fn)
+
+            session_context["deleted_files"] = context_deleted_files
+            chat_session.set_context(session_context)
+
+        results = await self.file_rpc.delete(local_deletes)
+        for result in results:
+            if not result.success:
+                print(f"Failed to apply delete file locally to {result.path} with error {result.message}.")
 
         return await self.manipulate(SwitchAction(file=new_active_fn), new_active_fn)
 
-    async def scroll_down_file(self, resp) -> str:
+    async def scroll_down_file(self, resp: dict[str, Any]) -> str:
         cache = self.cache
 
         passed, failing_key = self.validate_llm_call(
@@ -1374,7 +1508,7 @@ class ACI(AsimovBase):
 
         return content
 
-    async def scroll_up_file(self, resp) -> str:
+    async def scroll_up_file(self, resp: dict[str, Any]) -> str:
         cache = self.cache
 
         passed, failing_key = self.validate_llm_call(
@@ -1393,49 +1527,88 @@ class ACI(AsimovBase):
         content = await self.manipulate(ScrollUpAction(scroll=scroll), active_file)
 
         return content
+    
+    async def tool_result_reducer(self, states: list[dict[str, Any]]) -> str:
+        return "\n".join([state["content"] for state in states])
 
-    async def create_file(self, resp) -> str:
+    async def create_files(self, resp) -> str:
         cache = self.cache
 
-        passed, failing_key = self.validate_llm_call(
-            resp, self.tool_schemas["create_file"]["input_schema"]
-        )
+        creates = resp["creates"]
 
-        if not passed:
-            return f"{failing_key} is required for 'create_file', please try again with the correct parameters."
+        passing = True
+        error_messages = []
 
-        content = resp["content"]
-        step = resp["step"]
-        file = resp["file"]
-        self._logger.debug(f"CREATE FILE {file}")
+        last_created_files = await cache.get("last_created_files", [])
 
-        exists = (
-            await self.file_rpc.read(file, overlay_modified=True) is not None
-        ) or (
-            (await cache.get("output_modified_files", {})).get(
-                file, "BISMUTH_DELETED_FILE"
+        compound_state = []
+
+        for i, create in enumerate(creates):
+            passed, failing_key = self.validate_llm_call(
+                create, self.tool_schemas["create_files"]["input_schema"]["properties"]["creates"]["items"]
             )
-            != "BISMUTH_DELETED_FILE"
-        )
-        if exists:
-            return "That file exists already, try jumping to a definition in it to open it."
 
-        content = await self.manipulate(CreateAction(content=content, file=file), file)
+            passing = passing and passed
 
-        session_id = await cache.get("msg_session_id")
-        chat_session = ChatSessionEntity.get(session_id)
-        assert chat_session is not None
-        session_context = chat_session.get_context()
-        context_created_files = session_context.get("created_files", [])
-        context_created_files.append(file)
+            if not passed:
+                error_messages.append(f"{failing_key} in item {i} of the 'creates' array is required for 'create_files', please try again with the correct parameters.")
 
-        session_context["created_files"] = context_created_files
-        chat_session.set_context(session_context)
-        await self.update_change_log(step)
+            file = create["file"]
 
-        return content
+            exists = (
+                await self.file_rpc.read(file, overlay_modified=True) is not None
+            ) or (
+                (await cache.get("output_modified_files", {})).get(
+                    file, "BISMUTH_DELETED_FILE"
+                )
+                != "BISMUTH_DELETED_FILE"
+            )
+            if exists:
+                error_messages.append(f"Element {i}, {file} in the 'creates' array exists already.")
+                passing = False
 
-    async def go_to_line(self, resp) -> str:
+        if not passing:
+            self._turns_remaining += 1
+            return "\n".join(error_messages)
+
+        local_file_creates = []
+
+        for i, create in enumerate(creates):
+            content = create["content"]
+            step = create["step"]
+            file = create["file"]
+            self._logger.debug(f"CREATE FILE {file}")
+
+            content = await self.manipulate(CreateAction(content=content, file=file), file)
+
+            session_id = await cache.get("msg_session_id")
+            chat_session = ChatSessionEntity.get(session_id)
+            assert chat_session is not None
+
+            session_context = chat_session.get_context()
+            context_created_files = session_context.get("created_files", [])
+            context_created_files.append(file)
+            session_context["created_files"] = context_created_files
+            chat_session.set_context(session_context)
+            await self.update_change_log(step)
+
+            local_file_creates.append(FileCreate(path=file, content=content))
+
+            compound_state.append(content)
+
+            last_created_files.append(file)
+
+        await cache.set("last_created_files", last_created_files)
+
+        results = await self.file_rpc.create(local_file_creates)
+        
+        for result in results:
+            if not result.success:
+                print(f"Failed to apply create file locally to {result.path} with error {result.message}.")
+
+        return "\n".join(compound_state)
+
+    async def go_to_line(self, resp: dict[str, Any]) -> str:
         self._logger.debug("GO TO LINE")
 
         cache = self.cache
@@ -1454,6 +1627,34 @@ class ACI(AsimovBase):
 
         return content
 
+    async def tool_parser(self, content):
+        if self.mode.value == ACIExecutionMode.SINGLE.value:
+            mode = ACIMode.CONSTRAINED
+        else:
+            mode = self._mode
+        prompt = self.prompts()[mode]
+        self._schema_parser = WAILGenerator(str(self._template_root()))
+
+        self._schema_parser.load_wail(prompt)
+
+        out = self._schema_parser.parse_llm_output(content)
+
+        tools = []
+        has_create_edit = False
+
+        for tool in out["res"]:
+            tools.append({"name": tool["_type"], "input": tool } | tool)
+
+            if tool["_type"] in ["CreateFiles", "EditFiles"]:
+                has_create_edit = True
+
+        if has_create_edit:
+            tools.append(
+                {"name": "AnalyzeCode", "input": {}}
+            )
+
+        return tools
+
     async def prompt_and_toolset_for_current_mode(self):
         if self.mode.value == ACIExecutionMode.SINGLE.value:
             mode = ACIMode.CONSTRAINED
@@ -1468,7 +1669,7 @@ class ACI(AsimovBase):
 
         pinned_file_context = ""
 
-        if not bool(self._pinned_files):
+        if bool(self._pinned_files):
             for fn, content in self._pinned_files.items():
                 tmp = textwrap.dedent(
                     f"""
@@ -1486,16 +1687,35 @@ class ACI(AsimovBase):
         prompt = self.prompts()[mode]
 
         viewer_history = await self.cache.get("viewer_history", [])
-        prompt = Template(prompt).render(
-            lines=self._lines_in_view(),
-            task=input_task,
-            files=files,
-            viewer_state=viewer_history[0],
-            turns=self.initial_turns,
-            execution_mode=self.mode,
-            pinned_files=pinned_file_context,
-            **task_config,
-            **prompt_extra,
-        )
+        
+        if self.unstructured:
+            prompt = self.prompts()[mode]
+            self._schema_parser = WAILGenerator(str(self._template_root()))
+            self._schema_parser.load_wail(prompt)
+
+            (prompt, warnings, errs) = self._schema_parser.get_prompt(
+                lines=self._lines_in_view(),
+                task=input_task,
+                files=files,
+                viewer_state=viewer_history[0],
+                turns=self.initial_turns,
+                execution_mode=str(self.mode),
+                pinned_files=pinned_file_context,
+                **task_config,
+                **prompt_extra,
+            )
+        else:
+            prompt = Template(prompt).render(
+                lines=self._lines_in_view(),
+                task=input_task,
+                files=files,
+                viewer_state=viewer_history[0],
+                turns=self.initial_turns,
+                execution_mode=self.mode,
+                pinned_files=pinned_file_context,
+                **task_config,
+                **prompt_extra,
+            )
 
         return (prompt, toolset, mode)
+    

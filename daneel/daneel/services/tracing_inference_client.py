@@ -1,18 +1,17 @@
 import asyncio
-import functools
-import logging
-import random
 from datetime import datetime, timedelta
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
-
+import functools
+import random
+import logging
+from typing import AsyncGenerator, Dict, List, Callable, Awaitable, Any, Optional, Tuple
 import opentelemetry.trace
 from asimov.caches.cache import Cache
-from asimov.graph import NonRetryableException
 from asimov.services.inference_clients import (
-    ChatMessage,
     InferenceClient,
+    ChatMessage,
     RetriesExceeded,
 )
+from asimov.graph import NonRetryableException
 
 from daneel.utils.tracing import trace_output
 
@@ -20,7 +19,7 @@ tracer = opentelemetry.trace.get_tracer(__name__)
 
 
 class CreditsExhausted(NonRetryableException):
-    def __str__(self):
+    def __str__(self) -> str:
         return f"{self.__class__.__name__}: {super().__str__()}"
 
 
@@ -87,7 +86,7 @@ class TracingInferenceClient(InferenceClient):
         self._cache = cache
 
     @property
-    def model(self):
+    def model(self) -> str:  # type: ignore
         return self.client.model
 
     @property
@@ -102,7 +101,7 @@ class TracingInferenceClient(InferenceClient):
                 return self.fallback_client
         return self.primary_client
 
-    async def _trace_cb(self, id, req, resp, cost):
+    async def _trace_cb(self, id, req, resp, cost) -> None:
         if self._cache is None:
             return
 
@@ -144,7 +143,7 @@ class TracingInferenceClient(InferenceClient):
 
         await self._cache.set("credits_used", usage)
 
-    async def _ensure_credits(self):
+    async def _ensure_credits(self) -> None:
         if self._cache is None:
             return
 
@@ -180,6 +179,67 @@ class TracingInferenceClient(InferenceClient):
         id = random.randrange(1000000)
         await trace_output([m.model_dump() for m in messages], f"gen_input_{id}")
         await trace_output(res, f"gen_output_{id}")
+        return res
+    
+    @with_fallback
+    async def _unstructured_stream(
+        self,
+        serialized_messages,
+        system=None,
+        max_tokens=1024,
+        top_p=0.9,
+        temperature=0.5,
+        middlewares=[],
+    ):
+        await self._ensure_credits()
+
+        if "openai" in self.client.model and tool_choice == "any":
+            tool_choice = "required"
+
+        res = await self.client._unstructured_stream(
+            serialized_messages,
+            system,
+            max_tokens,
+            top_p,
+            temperature,
+            middlewares,
+        )
+
+        id = random.randrange(1000000)
+        await trace_output(serialized_messages, f"unstructured_tool_chain_input_{id}")
+        await trace_output(res, f"unstructured_tool_chain_output_{id}")
+        return res
+    
+    @with_fallback
+    async def _unstructured_stream(
+        self,
+        serialized_messages: List[Dict[str, Any]],
+        tools: List[Tuple[Callable, Dict[str, Any]]],
+        system: Optional[str] = None,
+        max_tokens=8192,
+        top_p=0.9,
+        temperature=0.5,
+        tool_choice="any",
+        middlewares: List[Callable[[dict[str, Any]], Awaitable[None]]] = [],
+    ) -> List[Dict[str, Any]]:
+        await self._ensure_credits()
+
+        if "openai" in self.client.model and tool_choice == "any":
+            tool_choice = "required"
+
+        res = await self.client._tool_chain_stream(
+            serialized_messages,
+            tools,
+            system,
+            max_tokens,
+            top_p,
+            temperature,
+            tool_choice,
+            middlewares,
+        )
+        id = random.randrange(1000000)
+        await trace_output(serialized_messages, f"tool_chain_input_{id}")
+        await trace_output(res, f"tool_chain_output_{id}")
         return res
 
     @with_fallback
@@ -226,6 +286,8 @@ class TracingInferenceClient(InferenceClient):
         tool_choice="any",
         middlewares: List[Callable[[dict[str, Any]], Awaitable[None]]] = [],
         mode_swap_callback: Optional[Callable] = None,
+        tool_parser = None,
+        tool_result_reducer = None
     ):
         if "openai" in self.client.model and tool_choice == "any":
             tool_choice = "required"
@@ -257,4 +319,6 @@ class TracingInferenceClient(InferenceClient):
             tool_choice=tool_choice,
             middlewares=middlewares,
             mode_swap_callback=mode_swap_callback,
+            tool_parser=tool_parser,
+            tool_result_reducer=tool_result_reducer
         )

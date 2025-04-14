@@ -927,7 +927,7 @@ async fn _main() -> Result<()> {
             };
             let (project, feature) = get_project_and_feature_for_repo(&client, &repo_path).await?;
 
-            let mut url: Url = Url::parse(&config.daneel_url)?;
+            let mut url: Url = Url::parse(&config.api_url)?;
 
             url.set_scheme("https").unwrap();
 
@@ -1023,9 +1023,8 @@ async fn _main() -> Result<()> {
                         &session,
                         &repo_path,
                         &client,
-                        &config.daneel_url,
-                        &daneel_client,
                         &ws_url,
+                        &daneel_client,
                     )
                     .await
                 }

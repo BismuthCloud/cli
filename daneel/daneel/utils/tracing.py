@@ -1,12 +1,13 @@
+import aioboto3  # type: ignore
 import contextvars
-import inspect
 import json
-import os
-import pathlib
 import threading
 from typing import Optional
+import inspect
+import os
+import pathlib
+from opentelemetry.instrumentation.utils import suppress_instrumentation
 
-import aioboto3  # type: ignore
 from pydantic_core import to_jsonable_python
 
 request_id = contextvars.ContextVar("request_id", default="UNKNOWN")
@@ -14,7 +15,9 @@ cnt_lock = threading.Lock()
 counts: dict[str, int] = {}
 
 
-async def trace_output(data: str | list | dict | None, name_hint: Optional[str] = None):
+async def trace_output(
+    data: str | list | dict | None, name_hint: Optional[str] = None
+) -> None:
     out_dir = os.environ.get("DANEEL_TRACE", "")
     if not out_dir:
         return
@@ -42,13 +45,14 @@ async def trace_output(data: str | list | dict | None, name_hint: Optional[str] 
         raise ValueError(f"Unsupported tracing data type: {type(data)}")
 
     if out_dir == "s3":
-        session = aioboto3.Session()
-        async with session.client("s3") as s3:
-            await s3.put_object(
-                Bucket="bismuth-traces",
-                Key=f"{req_id}/{str(count).zfill(3)}_{name}.txt",
-                Body=serialized.encode("utf-8"),
-            )
+        with suppress_instrumentation():
+            session = aioboto3.Session()
+            async with session.client("s3") as s3:
+                await s3.put_object(
+                    Bucket="bismuth-traces",
+                    Key=f"{req_id}/{str(count).zfill(3)}_{name}.txt",
+                    Body=serialized.encode("utf-8"),
+                )
     else:
         out_dir_p = pathlib.Path(out_dir) / req_id
         out_dir_p.mkdir(parents=True, exist_ok=True)

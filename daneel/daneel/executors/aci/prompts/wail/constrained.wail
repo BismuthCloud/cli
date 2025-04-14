@@ -1,0 +1,116 @@
+import { ConstrainedToolCall } from "./tools.lib.wail"
+
+template ConstrainedPrompt(task: String, files: String, lines: Number, turns: Number, pinned_files: String, viewer_state: String) -> ConstrainedToolCall[] {
+    prompt: """
+    Your goal is to efficiently make file changes in a constrained environment with only {{turns}} turns available. Each creation, edit, or deletion of a file costs one turn.
+    As does running commands.
+
+    Here is the task you need to perform:
+    <task>
+    {{task}}
+    </task>
+
+    Here are the files you can work with:
+    <files>
+    {{files}}
+    </files>
+
+    You'll be working with <lines>{{lines}}</lines> lines of code at a time, or the entire file if it's smaller.
+
+    The viewer interface will show:
+    - Task description
+    - Available files
+    - Current file content
+    - Available tools
+    - Remaining Turns
+
+    Available Tools:
+    1. File Operations (Cost 1 Turn):
+    - create_files: Create a new file with specified content
+    - edit_files: Make targeted changes to existing file content, can perform multiple edits across files in one action
+    - delete_files: Remove a file from the project
+    - run_command: Run a command in the users shell
+
+    2. Navigation Operations (Free):
+    - open_file: Open and view a file's contents
+    - list_files: Show all available project files (You can use subpaths to filter down)
+
+    Tool Usage Guide:
+
+    a) create_files:
+    Required: Array[{file, content, step, thoughts}]
+    Use for: Creating new files needed for the task
+    Note: Do not include things like line numbers or other editor visuals, this should just be the content itself.
+
+    b) edit_files:
+    Required: Array[{file, lines_to_replace, replace_text, step, thoughts, id, file_id}]
+    Use for: Making specific changes to existing files
+    Note: Can only edit lines currently visible in viewer, do not reproduce things like line numbers or visuals for the editor.
+    This should just be the content itself.
+
+    c) delete_files:
+    Required: Array[{file_id, step}]
+    Use for: Removing files when necessary
+
+    d) run_command:
+    Required: command: String
+    Use for: Installing software, running tests
+
+    e) analyze_code:
+    Required: None
+    Use for: Checking errors in code you've just written or code files created.
+
+    f) open_file (Free):
+    Required: file
+    Use for: Viewing file contents
+
+    g) list_files (Free):
+    Required: none
+    Use for: Finding available files
+
+    h) finalize (Free):
+    Required: none
+    Use for: Marking task as complete when you're done with all changes
+
+    Key Constraints:
+    1. You have exactly {{turns}} turns total
+    2. Only create_files, edit_files, delete_files and run_command cost turns
+    3. You should not explore or analyze extensively
+    4. Make changes based on the task requirements
+    5. Context is cached between calls, so extensive navigation is unnecessary
+    6. You must use at least one turn
+    7. Cede control back to driver when turns are exhausted
+    8. Use finalize when your changes are complete
+
+    Terminology notes:
+    If the user references pinned files, this means files that will always be present in the listed open files at the start.
+
+    -----------------------------Pinned File Context----------------------------------
+    {{pinned_files}}
+    Note: Pinned file context here will not change even if you edit the actual file later on. Consider this as starting reference material.
+    -----------------------------IDE Viewer State-------------------------------------
+    This viewer state is to help you understand more about the code contextually, it's structure is to provide additional information to help you reason:
+    {{viewer_state}}
+
+    Do not respond with or reproduce this state in your response you may use it to reason about your next action.
+    ----------------------------------------------------------------------------------
+    {{return_type}}
+    """
+}
+
+main {
+    template_args {
+        files: String,
+        lines: Number,
+        pinned_files: String,
+        viewer_state: String,
+        turns: Number,
+        task: String
+    }
+
+    let res = ConstrainedPrompt(files: $files, lines: $lines, pinned_files: $pinned_files, viewer_state: $viewer_state, turns: $turns, task: $task);
+
+    prompt {
+        {{res}}
+    }
+}

@@ -1,7 +1,7 @@
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional, Union
-
 from asimov.asimov_base import AsimovBase
+from typing import Any, List, Literal, Optional, Dict, Union
+from enum import Enum
 from pydantic import ConfigDict, Field
 
 
@@ -28,6 +28,8 @@ class WSMessageType(Enum):
     SWITCH_MODE_RESPONSE = "SWITCH_MODE_RESPONSE"
     PIN_FILE = "PIN_FILE"
     PIN_FILE_RESPONSE = "PIN_FILE_RESPONSE"
+    SWITCH_MODEL = "SWITCH_MODEL"
+    SWITCH_MODEL_RESPONSE = "SWITCH_MODEL_RESPONSE"
 
 
 class WSSerializeBase(AsimovBase):
@@ -64,6 +66,8 @@ class RunCommandMessage(WSSerializeBase):
     output_modified_files: List[ChatModifiedFile] = Field(default_factory=list)
     command: str
 
+class SwitchModelResponseMessage(WSSerializeBase):
+    model: str
 
 class PinFileMessage(WSSerializeBase):
     path: str
@@ -110,16 +114,55 @@ class FileRPCReadRequest(WSSerializeBase):
     action: Literal["READ"] = "READ"
     path: str
 
+class FileRPCEditResponse(WSSerializeBase):
+    action: Literal["EDIT"] = "EDIT"
+    results: list["FileRPCWriteActionResult"]
+
+class FileRPCDeleteResponse(WSSerializeBase):
+    action: Literal["DELETE"] = "DELETE"
+    results: list["FileRPCWriteActionResult"]
+
+class FileRPCCreateResponse(WSSerializeBase):
+    action: Literal["CREATE"] = "CREATE"
+    results: list["FileRPCWriteActionResult"]
 
 class FileRPCReadResponse(WSSerializeBase):
     action: Literal["READ"] = "READ"
     content: Optional[str]
+
+class FileRPCWriteActionResult(WSSerializeBase):
+    success: bool
+    path: str
+    message: Optional[str]
 
 
 class FileRPCSearchRequest(WSSerializeBase):
     action: Literal["SEARCH"] = "SEARCH"
     query: str
 
+
+class FileEdit(WSSerializeBase):
+    path: str
+    replace: str
+
+class FileDelete(WSSerializeBase):
+    path: str
+
+class FileCreate(WSSerializeBase):
+    path: str
+    content: str
+
+class FileRPCEditRequest(WSSerializeBase):
+    action: Literal["EDIT"] = "EDIT"
+    edits: list[FileEdit]
+
+class FileRPCDeleteRequest(WSSerializeBase):
+    action: Literal["DELETE"] = "DELETE"
+    edits: list[FileDelete]
+
+class FileRPCCreateRequest(WSSerializeBase):
+    action: Literal["CREATE"] = "CREATE"
+    creates: list[FileCreate]
 
 class FileRPCSearchResponse(WSSerializeBase):
     action: Literal["SEARCH"] = "SEARCH"
@@ -132,32 +175,26 @@ class WSMessage(WSSerializeBase):
     ping: Optional[None] = None
     chat: Optional[ChatMessage] = None
     pin: Optional[PinFileMessage] = None
+    model: Optional[str] = None
     response_state: Optional[ResponseState] = Field(default=None, alias="responseState")
     run_command: Optional[RunCommandMessage] = None
     run_command_response: Optional[RunCommandResponse] = Field(
         default=None, alias="runCommandResponse"
     )
+    switch_model_response: Optional[SwitchModelResponseMessage] = Field(
+        default=None, alias="switchModelResponse"
+    )
     file_rpc: Optional[
-        Union[FileRPCListRequest, FileRPCReadRequest, FileRPCSearchRequest]
+        Union[FileRPCListRequest, FileRPCReadRequest, FileRPCSearchRequest, FileRPCEditRequest, FileRPCCreateRequest, FileRPCDeleteRequest]
     ] = Field(discriminator="action", default=None)
     file_rpc_response: Optional[
-        Union[FileRPCListResponse, FileRPCReadResponse, FileRPCSearchResponse]
+        Union[FileRPCListResponse, FileRPCReadResponse, FileRPCSearchResponse, FileRPCEditResponse, FileRPCCreateResponse, FileRPCDeleteResponse]
     ] = Field(discriminator="action", default=None)
     aci: Optional[ACIMessage] = None
     usage: Optional[int] = None
 
 
-class WebSocketSession:
-    def __init__(self, websocket, user_id: int):
-        self.websocket = websocket
-        self.user_id = user_id
-        self.properties: Dict[str, Any] = {}
-
-    async def send(self, message):
-        await self.websocket.send(message)
-
-
-async def null_send_callback(msg: WSMessage):
+async def null_send_callback(msg: WSMessage) -> None:
     pass
 
 

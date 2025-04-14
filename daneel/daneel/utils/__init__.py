@@ -1,20 +1,22 @@
-import os
 import re
-from difflib import SequenceMatcher
-from itertools import islice
-from typing import Optional
-
+from typing import Optional, Protocol
 from asimov.services.inference_clients import (
-    AnthropicInferenceClient,
+    InferenceClient,
     BedrockInferenceClient,
-    GoogleGenAIInferenceClient,
+    AnthropicInferenceClient,
     OpenRouterInferenceClient,
+    GoogleGenAIInferenceClient,
 )
+import os
 
 from daneel.constants import BIG_MODEL, MODEL_CONFIGURATION
 
+from itertools import islice
 
-def extract_tagged_content(text, tag):
+from difflib import SequenceMatcher
+
+
+def extract_tagged_content(text: str, tag: str) -> list[str]:
     pattern = rf"<{tag}>\n?(.*)\n?</{tag}>"  # Optional newlines with \n?
     matches = re.findall(pattern, text, re.DOTALL)
     return matches
@@ -29,9 +31,13 @@ def iterate_in_batches(iterable, batch_size=4):
         yield batch
 
 
+class CreateInferenceClientProtocol(Protocol):
+    def __call__(self, model: str, suite: str = "default") -> InferenceClient: ...
+
+
 def create_google_gemini_api_client(
     model: str, suite: str = "default", api_key: Optional[str] = None
-):
+) -> GoogleGenAIInferenceClient:
     return GoogleGenAIInferenceClient(
         MODEL_CONFIGURATION["google"][suite][model],
         api_key or os.environ["GOOGLE_GEMINI_API_KEY"],
@@ -39,17 +45,22 @@ def create_google_gemini_api_client(
 
 
 def create_openrouter_inference_client(
-    model: str, suite: str = "default", api_key: Optional[str] = None
+    model, suite: Optional[str] = "default", big_model_override: Optional[str] = None, api_key: Optional[str] = None
 ):
+    suite = MODEL_CONFIGURATION["openrouter"][suite]
+
+    if big_model_override:
+        suite["BIG_MODEL"] = big_model_override
+
     return OpenRouterInferenceClient(
-        model=MODEL_CONFIGURATION["openrouter"][suite][model],
+        model=suite[model],
         api_key=api_key or os.environ["OPENROUTER_KEY"],
     )
 
 
 def create_anthropic_inference_client(
     model: str, suite: str = "default", api_key: Optional[str] = None
-):
+) -> AnthropicInferenceClient:
     if suite.startswith("thinking"):
         return AnthropicInferenceClient(
             model=MODEL_CONFIGURATION["anthropic"]["thinking"][model],
@@ -65,25 +76,21 @@ def create_anthropic_inference_client(
 def create_bedrock_inference_client(
     model: str,
     suite: str = "default",
-):
+) -> BedrockInferenceClient:
     region_name = os.environ.get("AWS_REGION", "us-west-2")
     return BedrockInferenceClient(
         model=MODEL_CONFIGURATION["bedrock"][suite][model], region_name=region_name
     )
 
 
-def filter_dict_keys(dict_list, allowed_keys):
-    return [{k: d[k] for k in allowed_keys if k in d} for d in dict_list]
-
-
-def mask_context_messages(msg: str):
+def mask_context_messages(msg: str) -> str:
     if "<CONTEXT>" in msg[:12]:
         return "<masked>Message masked and is no longer relevant to the conversation.</masked>"
     else:
         return msg
 
 
-def strip_file_tags(lines):
+def strip_file_tags(lines: list[str]) -> list[str]:
     # Remove tags
     if lines and lines[0].startswith("<FILE"):
         lines = lines[1:]
@@ -134,7 +141,9 @@ def normalize_whitespace(text: str) -> str:
     return "\n".join(normalized_lines)
 
 
-def find_text_chunk(content, search_lines):
+def find_text_chunk(
+    content: str | list[str], search_lines: str | list[str]
+) -> Optional[dict]:
     if isinstance(content, str):
         content = content.splitlines()
 
