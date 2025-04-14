@@ -809,7 +809,11 @@ impl From<api::ChatMessage> for ChatMessage {
             if message.is_ai {
                 ChatMessageUser::AI
             } else {
-                ChatMessageUser::User(message.user.as_ref().unwrap().name.clone())
+                if !message.user.is_some() {
+                    ChatMessageUser::User("User".to_string())
+                } else {
+                    ChatMessageUser::User(message.user.as_ref().unwrap().name.clone())
+                }
             },
             &message.content,
         );

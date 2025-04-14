@@ -2,7 +2,7 @@ import os
 import threading
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Dict, Generic, List, Optional, Type, TypeVar
+from typing import Any, Callable, Dict, Generic, List, Optional, Type, TypeVar, Self
 
 import psycopg2.extras
 from asimov.data.postgres.manager import DatabaseManager
@@ -192,11 +192,17 @@ class DBModel:
                     cur = cursor
                 cur.execute(query, tuple(ids))
 
-    def persist(self):
-        if hasattr(self, "id") and self.id is not None:
-            self.update()
-        else:
-            self.save()
+    def persist(self, cursor=None) -> Self:
+        db_dict = self.to_db_dict()
+        if "id" in db_dict:
+            del db_dict["id"]  # Remove id from insert, it's auto-generated
+        columns = ", ".join(db_dict.keys())
+        placeholders = ", ".join(["%s"] * len(db_dict))
+        query = f"INSERT INTO {self.__class__.TABLE_NAME} (id, {columns}) VALUES (nextval('{self.__class__.TABLE_NAME}_seq'), {placeholders}) RETURNING id"
+
+        self.id = self.__class__.db_manager().execute_and_return_id(
+            query, params=tuple(db_dict.values()), cursor=cursor
+        )
         return self
 
     @classmethod

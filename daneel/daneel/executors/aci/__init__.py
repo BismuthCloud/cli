@@ -49,6 +49,7 @@ from daneel.executors.aci.aci_types import *
 LINES_IN_VIEW = 500
 LINES_IN_VIEW_CONSTRAINED = 2000
 RECURSION_LIMIT = 1
+TURNS = 10
 
 GIT_HOST = os.environ.get("GIT_HOST", "localhost:8765")
 
@@ -65,16 +66,16 @@ class ACI(AsimovBase):
     recv_message_callback: Callable[[], Awaitable[WSMessage]]
     file_rpc: FileRPC
     driver_mode: ACIMode = ACIMode.CONSTRAINED
-    initial_turns: int = 3
+    initial_turns: int = TURNS
     interactive_mode: bool = Field(default=False)
     recursion_depth: int = Field(default=0)
     finalized: bool = Field(default=False)
     mode: ACIExecutionMode = Field(default=ACIExecutionMode.SINGLE)
-    unstructured: bool = Field(default=False)
+    unstructured: bool = Field(default=True)
     _input_task: str = PrivateAttr()
     _step_count: int = PrivateAttr()
     _pinned_files: dict[str, str] = PrivateAttr(default_factory=dict)
-    _turns_remaining: int = PrivateAttr(default=0)
+    _turns_remaining: int = PrivateAttr(default=TURNS)
     _visualizer: Optional[ACIVisualizer] = PrivateAttr(default=None)
     _test_failure_count: int = PrivateAttr(default=0)
     _attempted_finalize: bool = PrivateAttr(default=False)
@@ -539,8 +540,8 @@ class ACI(AsimovBase):
         recv_message_callback: Callable[[], Awaitable[WSMessage]] = null_recv_callback,
         interactive_mode=False,
         driver_mode=ACIMode.CONSTRAINED,
-        initial_turns=3,
-        unstructured=False,
+        initial_turns=TURNS,
+        unstructured=True,
     ) -> "ACI":
         if send_message_callback is None:
 
@@ -1633,9 +1634,12 @@ class ACI(AsimovBase):
         else:
             mode = self._mode
         prompt = self.prompts()[mode]
+
         self._schema_parser = WAILGenerator(str(self._template_root()))
 
         self._schema_parser.load_wail(prompt)
+
+        print("Parsing LLM output.")
 
         out = self._schema_parser.parse_llm_output(content)
 
@@ -1652,6 +1656,8 @@ class ACI(AsimovBase):
             tools.append(
                 {"name": "AnalyzeCode", "input": {}}
             )
+
+        print(tools)
 
         return tools
 

@@ -309,6 +309,7 @@ class TracingInferenceClient(InferenceClient):
                 return hook
 
             hooked_tools.append((capture(func, spec), spec))
+
         return await self.client.tool_chain(
             messages,
             hooked_tools,

@@ -1,10 +1,11 @@
 # Light wrapper around websocket ops for file accesses
-import shutil
+import asyncio
 from pathlib import Path
+import shutil
 from typing import Awaitable, Callable, List
 
+from git import Optional, Repo
 from asimov.caches.cache import Cache
-from git import Optional
 
 from daneel.data.postgres.models import FeatureEntity
 from daneel.utils.glob_match import path_matches
@@ -16,6 +17,16 @@ from daneel.utils.websockets import (
     FileRPCReadResponse,
     FileRPCSearchRequest,
     FileRPCSearchResponse,
+    FileRPCEditRequest,
+    FileRPCEditResponse,
+    FileRPCCreateRequest,
+    FileRPCCreateResponse,
+    FileRPCDeleteRequest,
+    FileRPCDeleteResponse,
+    FileEdit,
+    FileDelete,
+    FileCreate,
+    FileRPCWriteActionResult,
     WSMessage,
     WSMessageType,
 )
@@ -49,14 +60,14 @@ class FileRPC:
         if self.use_pushed_only and not self.feature.project.has_pushed:
             raise ValueError("use_pushed_only is set but no repo is available")
 
-    def __del__(self):
+    def __del__(self) -> None:
         if self.repo:
             shutil.rmtree(self.repo)
 
     def _is_blocked(self, path: str) -> bool:
         return path_matches(path, self.block_globs)
 
-    async def _ensure_cloned(self):
+    async def _ensure_cloned(self) -> None:
         if self.feature.project.has_pushed and not self.repo:
             self.repo = await clone_repo(self.feature)
 
@@ -87,7 +98,7 @@ class FileRPC:
         await self._cache.set("file_list_cache", files)
         return files
 
-    async def list(self, overlay_modified: bool = False) -> list[str]:
+    async def list(self, overlay_modified: bool = False, top_level_only=False) -> list[str]:
         await self._ensure_cloned()
         out = await self._list()
         if overlay_modified:
@@ -98,7 +109,56 @@ class FileRPC:
             return list(
                 filter(lambda fn: modified.get(fn) != "BISMUTH_DELETED_FILE", out)
             )
+        
+        if top_level_only:
+            add_top_level_folders = list(set([f.split("/")[0] for f in out]))
+
+            return [f for f in out if "/" not in f] + add_top_level_folders
+
         return out
+    
+    async def create(self, creates: List[FileCreate]) -> Awaitable[List[FileRPCWriteActionResult]]:
+        await self.send(
+            WSMessage(
+                type=WSMessageType.FILE_RPC,
+                file_rpc=FileRPCCreateRequest(
+                    creates=creates
+                ),
+            )
+        )
+        res = await self.recv()
+        assert isinstance(res.file_rpc_response, FileRPCCreateResponse)
+
+        return res.file_rpc_response.results
+
+    
+    async def edit(self, edits: List[FileEdit]) -> Awaitable[List[FileRPCWriteActionResult]]:
+        await self.send(
+            WSMessage(
+                type=WSMessageType.FILE_RPC,
+                file_rpc=FileRPCEditRequest(
+                    edits=edits
+                ),
+            )
+        )
+        res= await self.recv()
+        assert isinstance(res.file_rpc_response, FileRPCEditResponse)
+
+        return res.file_rpc_response.results
+
+    async def delete(self, deletes: List[FileDelete]) -> Awaitable[List[FileRPCWriteActionResult]]:
+        await self.send(
+            WSMessage(
+                type=WSMessageType.FILE_RPC,
+                file_rpc=FileRPCDeleteRequest(
+                    deletes=deletes
+                ),
+            )
+        )
+        res= await self.recv()
+        assert isinstance(res.file_rpc_response, FileRPCDeleteResponse)
+
+        return res.file_rpc_response.results
 
     async def read(self, path: str, overlay_modified: bool = False) -> Optional[str]:
         await self._ensure_cloned()
@@ -122,7 +182,7 @@ class FileRPC:
             assert self.repo is not None
             try:
                 content = (self.repo / path).read_text()
-            except (FileNotFoundError, UnicodeDecodeError):
+            except (FileNotFoundError, UnicodeDecodeError, IsADirectoryError):
                 content = None
         else:
             await self.send(
@@ -181,7 +241,7 @@ class FileRPC:
 
         return results
 
-    async def cache(self, path: str, contents: Optional[str]):
+    async def cache(self, path: str, contents: Optional[str]) -> None:
         await self._cache.set(f"file_cache_{path}", contents)
 
     @property

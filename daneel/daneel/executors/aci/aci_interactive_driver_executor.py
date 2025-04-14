@@ -1,6 +1,7 @@
 import json
 import textwrap
 import traceback
+import os
 from asyncio import Semaphore, create_task, sleep
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
@@ -308,10 +309,19 @@ class ACIDriverExecutor(AgentModule):
         async def incremental_status_middleware(resp):
             if resp["type"] == "tool_use":
                 file = resp["input"].get("file")
-                if not file:
+                edits = resp["input"].get("edits", [])
+
+                if not file and edits == []:
                     return
 
-                if resp["name"] == "create_file":
+                if not file:
+                    files = []
+                    for edit in edits:
+                        files.append(edit.get("file", "unknown"))
+
+                    file = "|".join(files)
+
+                if resp["name"] == "create_files":
                     await self.send_message_callback(
                         WSMessage(
                             type=WSMessageType.ACI,
@@ -321,7 +331,7 @@ class ACIDriverExecutor(AgentModule):
                             ),
                         )
                     )
-                elif resp["name"] == "edit_file":
+                elif resp["name"] == "edit_files":
                     await self.send_message_callback(
                         WSMessage(
                             type=WSMessageType.ACI,
@@ -342,6 +352,10 @@ class ACIDriverExecutor(AgentModule):
             await sleep(0.1)
 
         try:
+            # Always use the unstructured parser by default
+            tool_parser = aci.tool_parser
+            tool_result_reducer = aci.tool_result_reducer
+
             result = await inference_client.tool_chain(
                 history,
                 tools=tools,
@@ -351,6 +365,8 @@ class ACIDriverExecutor(AgentModule):
                 tool_choice="any",
                 middlewares=[incremental_status_middleware],
                 mode_swap_callback=aci.prompt_and_toolset_for_current_mode,
+                tool_parser=tool_parser,
+                tool_result_reducer=tool_result_reducer
             )
 
             finalized = aci.finalized

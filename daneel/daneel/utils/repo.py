@@ -7,7 +7,7 @@ import logging
 
 from daneel.data.postgres.models import FeatureEntity
 
-GIT_HOST = os.environ.get("GIT_HOST", "localhost:8080")
+GIT_HOST = os.environ.get("GIT_HOST", "localhost:8765")
 
 
 def get_clone_url(feature: FeatureEntity) -> str:

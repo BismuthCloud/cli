@@ -73,7 +73,7 @@ LINES_IN_VIEW = 500
 LINES_IN_VIEW_CONSTRAINED = 2000
 RECURSION_LIMIT = 1
 
-GIT_HOST = os.environ.get("GIT_HOST", "localhost:8080")
+GIT_HOST = os.environ.get("GIT_HOST", "localhost:8000")
 
 
 class ACIExecutionMode(enum.Enum):

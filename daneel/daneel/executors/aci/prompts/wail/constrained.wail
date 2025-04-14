@@ -54,11 +54,11 @@ template ConstrainedPrompt(task: String, files: String, lines: Number, turns: Nu
 
     d) run_command:
     Required: command: String
-    Use for: Installing software, running tests
+    Use for: Installing software, running tests, running arbitrary commands.
 
     e) analyze_code:
     Required: None
-    Use for: Checking errors in code you've just written or code files created.
+    Use for: Checking for static analysis errors in code you've just written or code files created.
 
     f) open_file (Free):
     Required: file
@@ -75,12 +75,11 @@ template ConstrainedPrompt(task: String, files: String, lines: Number, turns: Nu
     Key Constraints:
     1. You have exactly {{turns}} turns total
     2. Only create_files, edit_files, delete_files and run_command cost turns
-    3. You should not explore or analyze extensively
-    4. Make changes based on the task requirements
-    5. Context is cached between calls, so extensive navigation is unnecessary
-    6. You must use at least one turn
-    7. Cede control back to driver when turns are exhausted
-    8. Use finalize when your changes are complete
+    3. Make changes based on the task requirements
+    4. Context is cached between calls, so extensive navigation is unnecessary
+    5. You must use at least one turn
+    6. Cede control back to the user when turns are exhausted
+    7. Use finalize when your changes are complete
 
     Terminology notes:
     If the user references pinned files, this means files that will always be present in the listed open files at the start.
