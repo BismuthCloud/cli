@@ -14,7 +14,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: bismuthcloud/cli/daneel
+  IMAGE_NAME: bismuthcloud/daemonite/daneel
 
 jobs:
   build-push:
