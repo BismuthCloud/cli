@@ -425,6 +425,34 @@ fn commit(repo_path: &Path, message: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+fn leave_staged(repo_path: &Path) -> Result<()> {
+    let repo = git2::Repository::open(repo_path)?;
+
+    let head = repo.head()?;
+    let parent_commit = repo.find_commit(head.target().unwrap())?;
+
+    // Don't reset unless this is a temp commit
+    if parent_commit.message().unwrap_or("") != "Bismuth Temp Commit" {
+        return Ok(());
+    }
+
+    Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .arg("reset")
+        .output()
+        .map_err(|e| anyhow!("Failed to run git reset: {}", e))
+        .and_then(|o| {
+            if o.status.success() {
+                Ok(())
+            } else {
+                Err(anyhow!("git reset failed (code={})", o.status))
+            }
+        })?;
+
+    Ok(())
+}
+
 fn revert(repo_path: &Path) -> Result<()> {
     let repo = git2::Repository::open(repo_path)?;
 
@@ -1022,11 +1050,11 @@ impl Widget for &mut ChatHistoryWidget {
         } else {
             // No messages, render the ascii art logo + /session message
             block.render(area, buf);
-            let mut lines = r#" ____  _                     _   _     
-| __ )(_)___ _ __ ___  _   _| |_| |__  
-|  _ \| / __| '_ ` _ \| | | | __| '_ \ 
-| |_) | \__ \ | | | | | |_| | |_| | | |
-|____/|_|___/_| |_| |_|\__,_|\__|_| |_|
+            let mut lines = r#" ____                                   _ _       
+|  _ \  __ _  ___ _ __ ___   ___  _ __ (_) |_ ___ 
+| | | |/ _` |/ _ \ '_ ` _ \ / _ \| '_ \| | __/ _ \
+| |_| | (_| |  __/ | | | | | (_) | | | | | ||  __/
+|____/ \__,_|\___|_| |_| |_|\___/|_| |_|_|\__\___|
 "#
             .split('\n')
             .map(|line| Line::styled(line, Style::default().fg(ratatui::style::Color::Magenta)))
@@ -1134,7 +1162,10 @@ impl Widget for &mut DiffReviewWidget {
         .block(Block::bordered().title(vec![
             " Review Diff ".into(),
             if self.can_apply {
-                Span::styled("(y to commit, n to revert) ", ratatui::style::Color::Yellow)
+                Span::styled(
+                    "(y to commit, s to stage, n to revert) ",
+                    ratatui::style::Color::Yellow,
+                )
             } else {
                 Span::styled("(press Esc to close) ", ratatui::style::Color::Yellow)
             },
@@ -1452,7 +1483,6 @@ struct App {
     input: tui_textarea::TextArea<'static>,
 
     client: APIClient,
-    daneel_client: APIClient,
     ws_stream: Option<
         tokio_tungstenite::WebSocketStream<
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -1483,7 +1513,6 @@ impl App {
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
         client: &APIClient,
-        daneel_client: &APIClient,
     ) -> Result<Self> {
         let chat_history: Vec<ChatMessage> = client
             .get(&format!(
@@ -1528,7 +1557,6 @@ impl App {
             file_browser: file_browser,
             input: tui_textarea::TextArea::default(),
             client: client.clone(),
-            daneel_client: daneel_client.clone(),
             ws_stream: Some(ws_stream),
             project: project.clone(),
             feature: feature.clone(),
@@ -2219,6 +2247,33 @@ impl App {
                             let mut state = self.state.lock().unwrap();
                             *state = AppState::Chat;
                         }
+                        KeyCode::Char('s') if diff.can_apply => {
+                            leave_staged(&self.repo_path)?;
+                            let client = self.client.clone();
+                            let project = self.project.id;
+                            let feature = self.feature.id;
+                            let message_id = diff.msg_id;
+                            let paths = list_all_files(&self.repo_path).unwrap();
+                            let current_pinned =
+                                self.file_browser.pinned.clone().into_iter().collect();
+                            self.file_browser = FileTreeWidget::new(paths, current_pinned);
+
+                            tokio::spawn(async move {
+                                let _ = client
+                                    .post(&format!(
+                                        "/projects/{}/features/{}/chat/accepted",
+                                        project, feature,
+                                    ))
+                                    .json(&api::GenerationAcceptedRequest {
+                                        message_id,
+                                        accepted: true,
+                                    })
+                                    .send()
+                                    .await;
+                            });
+                            let mut state = self.state.lock().unwrap();
+                            *state = AppState::Chat;
+                        }
                         KeyCode::Char('n') if diff.can_apply => {
                             revert(&self.repo_path)?;
                             let client = self.client.clone();
@@ -2433,8 +2488,9 @@ impl App {
                                                         - self.chat_history.scroll_position
                                                             as isize)
                                                         == (mouse.row as isize) - 1
-                                                        && (mouse.column == fb_area.width + 1
-                                                            || mouse.column == fb_area.width + 2)
+                                                        && (mouse.column >= fb_area.width + 1
+                                                            && mouse.column <= fb_area.width + 6)
+                                                    // len("[copy]")
                                                     {
                                                         clipboard_ctx
                                                             .set_contents(block.raw.clone())
@@ -2615,8 +2671,8 @@ impl App {
                     "/pin" => {}
                     "/model" => {
                         let models = self
-                            .daneel_client
-                            .get("/api/list_available_models")
+                            .client
+                            .get("/../../api/list_available_models")
                             .send()
                             .await?
                             .error_body_for_status()
@@ -2858,7 +2914,6 @@ pub async fn start_chat(
     repo_path: &Path,
     client: &APIClient,
     daneel_url: &str,
-    daneel_client: &APIClient,
 ) -> Result<()> {
     let repo_path = repo_path.to_path_buf();
 
@@ -2905,7 +2960,6 @@ pub async fn start_chat(
             sessions.clone(),
             ws_stream,
             client,
-            daneel_client,
         )
         .await?;
 

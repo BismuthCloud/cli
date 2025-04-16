@@ -1,6 +1,6 @@
 services:
   daneel:
-    image: daneel:latest
+    image: ghcr.io/bismuthcloud/cli/daneel:latest
     build:
       context: ./daneel
     environment:

@@ -36,12 +36,12 @@ jobs:
       - name: Build Release (${{ matrix.target }})
         run: |
           cross build --release --target ${{ matrix.target }}
-          mv target/${{ matrix.target }}/release/cli bismuthcli.${{ matrix.target }}
+          mv target/${{ matrix.target }}/release/cli daemonite.${{ matrix.target }}
 
       - name: Upload Release (${{ matrix.target }}) Binaries
         uses: softprops/action-gh-release@v2
         with:
-          files: cli/bismuthcli.${{ matrix.target }}
+          files: cli/daemonite.${{ matrix.target }}
 
   macos-build-push:
     runs-on: macos-latest
@@ -67,12 +67,12 @@ jobs:
       - name: Build Release (${{ matrix.target }})
         run: |
           cargo build --release --target ${{ matrix.target }}
-          mv target/${{ matrix.target }}/release/cli bismuthcli.${{ matrix.target }}
+          mv target/${{ matrix.target }}/release/cli daemonite.${{ matrix.target }}
 
       - name: Upload Release (${{ matrix.target }}) Binaries
         uses: softprops/action-gh-release@v2
         with:
-          files: cli/bismuthcli.${{ matrix.target }}
+          files: cli/daemonite.${{ matrix.target }}
 
   windows-build-push:
     runs-on: ubuntu-latest
@@ -98,12 +98,12 @@ jobs:
       - name: Build Release (${{ matrix.target }})
         run: |
           cross build --release --target ${{ matrix.target }}
-          mv target/${{ matrix.target }}/release/cli.exe bismuthcli.${{ matrix.target }}
+          mv target/${{ matrix.target }}/release/cli.exe daemonite.${{ matrix.target }}
 
       - name: Upload Release (${{ matrix.target }}) Binaries
         uses: softprops/action-gh-release@v2
         with:
-          files: cli/bismuthcli.${{ matrix.target }}
+          files: cli/daemonite.${{ matrix.target }}
 
   update-version-page:
     runs-on: ubuntu-latest
@@ -117,7 +117,7 @@ jobs:
         run: |
           mkdir static
           echo "${GITHUB_REF##*/v}" > static/LATEST
-          echo "<html><body><a href=\"https://github.com/BismuthCloud/cli/releases\">Download the CLI here</a><!-- ${GITHUB_REF##*/v} --></body></html>" > static/index.html
+          echo "<html><body><a href=\"https://github.com/BismuthCloud/daemonite/releases\">Download the CLI here</a><!-- ${GITHUB_REF##*/v} --></body></html>" > static/index.html
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:

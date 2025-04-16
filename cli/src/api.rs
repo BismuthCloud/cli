@@ -198,7 +198,7 @@ impl<'de> Deserialize<'de> for ContextStorage {
     }
 }
 
-fn default_model() -> String {
+pub fn default_model() -> String {
     "auto".to_string()
 }
 

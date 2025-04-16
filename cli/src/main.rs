@@ -931,8 +931,6 @@ async fn _main() -> Result<()> {
 
             url.set_scheme("https").unwrap();
 
-            let daneel_client = APIClient::new(&url, "")?;
-
             match command {
                 None => {
                     let repo_path = match repo {
@@ -1024,7 +1022,6 @@ async fn _main() -> Result<()> {
                         &repo_path,
                         &client,
                         &ws_url,
-                        &daneel_client,
                     )
                     .await
                 }

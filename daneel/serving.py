@@ -27,7 +27,7 @@ from daneel.utils.repo import clone_repo
 import opentelemetry.trace
 import fastapi.encoders
 
-from daneel.constants import MODEL
+from daneel.constants import CONFIGURABLE_BIG_MODELS, MODEL
 from daneel.data.file_rpc import FileRPC
 from daneel.services.tracing_inference_client import (
     CreditsExhausted,
@@ -65,6 +65,7 @@ from daneel.utils.websockets import (
     ChatMessage as WebsocketChatMessage,
     ChatModifiedFile,
     RunCommandResponse,
+    SwitchModelResponseMessage,
     WSMessage,
     WSMessageType,
 )
@@ -170,7 +171,7 @@ def headless_recv_callback_gen(cache):
     return trace_recv_callback
 
 
-async def get_inference_client_factory(organization, cache):
+async def get_inference_client_factory(organization, cache, big_model_override=None):
     providers = {
         "anthropic": create_anthropic_inference_client,
         "google": create_google_gemini_api_client,
@@ -209,7 +210,9 @@ async def get_inference_client_factory(organization, cache):
         )
     elif os.environ.get("OPENROUTER_KEY"):
         return lambda model: TracingInferenceClient(
-            create_openrouter_inference_client(model),
+            create_openrouter_inference_client(
+                model, big_model_override=big_model_override
+            ),
             cache,
         )
     else:
@@ -220,7 +223,10 @@ async def get_inference_client_factory(organization, cache):
                 detail="You must configure OpenRouter",
             )
         return lambda model: TracingInferenceClient(
-            create_openrouter_inference_client(model, api_key=config["key"]), cache
+            create_openrouter_inference_client(
+                model, api_key=config["key"], big_model_override=big_model_override
+            ),
+            cache,
         )
 
 
@@ -238,8 +244,21 @@ class BismuthCoreMixin:
             host=os.environ.get("REDIS_HOST", "localhost"), default_prefix=request_id
         )
 
+        chat_session = ChatSessionEntity.get(session_id)
+        assert chat_session is not None
+        session_context = chat_session.get_context()
+
+        model_override = None
+
+        if (
+            session_context
+            and session_context.get("model")
+            and session_context.get("model") != "auto"
+        ):
+            model_override = session_context["model"]
+
         inference_client_factory = await get_inference_client_factory(
-            feature.project.organization, cache
+            feature.project.organization, cache, model_override
         )
 
         send_message_callback = send_message_callback_gen(cache)
@@ -503,6 +522,11 @@ class BismuthAPI(BismuthCoreMixin):
         )
         self.router.add_api_route(
             "/api/codegraph/{feature_id}", self.delete_codegraph, methods=["DELETE"]
+        )
+        self.router.add_api_route(
+            "/api/list_available_models",
+            lambda: CONFIGURABLE_BIG_MODELS,
+            methods=["GET"],
         )
         self.router.add_api_route(
             "/healthcheck", lambda: {"status": "ok"}, methods=["GET"]
@@ -891,6 +915,28 @@ class BismuthAPI(BismuthCoreMixin):
                             type=WSMessageType.SWITCH_MODE_RESPONSE, chat=None
                         ).model_dump_json(by_alias=True)
                     )
+                elif message.type == WSMessageType.SWITCH_MODEL:
+                    session_id = auth_data.session_id
+                    chat_session = ChatSessionEntity.get(session_id)
+                    assert chat_session is not None
+                    session_context = chat_session.get_context()
+
+                    if message.model in CONFIGURABLE_BIG_MODELS:
+                        session_context["model"] = message.model
+                        logger.info(f"Switched model to {message.model}")
+                    else:
+                        logger.warning(f"Unknown model: {message.model}")
+
+                    chat_session.set_context(session_context)
+
+                    await websocket.send_bytes(
+                        WSMessage(
+                            type=WSMessageType.SWITCH_MODEL_RESPONSE,
+                            switch_model_response=SwitchModelResponseMessage(
+                                model=message.model
+                            ),
+                        ).model_dump_json(by_alias=True)
+                    )
                 elif message.type == WSMessageType.PIN_FILE:
                     session_id = auth_data.session_id
                     chat_session = ChatSessionEntity.get(session_id)
@@ -981,7 +1027,7 @@ async def lifespan(app):
 
     settings = get_settings()
     if settings.disable_auth and UserEntity.get(1) is None:
-        print("Creating default user")
+        logging.info("Creating default user")
         with DBModel.db_manager().get_cursor() as cursor:
             user = UserEntity(
                 email="user@bismuth.cloud",

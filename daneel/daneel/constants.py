@@ -2,6 +2,8 @@ BIG_MODEL = "BIG_MODEL"
 MODEL = "MODEL"
 SMALL_MODEL = "SMALL_MODEL"
 
+CONFIGURABLE_BIG_MODELS = ["auto", "anthropic/claude-3.5-sonnet", "openai/o3-mini"]
+
 # TODO: pull from s3
 # Provider -> Suite -> Model Class -> Model Name
 MODEL_CONFIGURATION = {
@@ -48,7 +50,7 @@ MODEL_CONFIGURATION = {
 LANGUAGE_CONSTRAINTS = """
 Language and scenario specific constraints
    - Javascript/Typescript
-      > UI Testing: 
+      > UI Testing:
          IMPORTANT - We are not writing or running tests for UI elements because testing a UI is a substantially different problem to building the code base.
          * Explicitly note that tests should not be written or run, and to focus on linting, compiling and static analysis for verifying correctness.
          * Consider that testing can cause complex feedback loops and should be handled at a different time unless the user has explicitly asked for a written test.

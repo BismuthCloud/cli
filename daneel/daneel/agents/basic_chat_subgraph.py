@@ -12,6 +12,7 @@ from asimov.graph import (
     ModuleType,
     Node,
     NodeConfig,
+    CompositeModule,  # noqa
 )
 
 from daneel.agents.common import StreamingMiddleware, SubGraphEntryNode
