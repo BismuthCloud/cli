@@ -1,6 +1,6 @@
 # Daemonite by Bismuth
 
-### Daemonite is your agentic mode AI developer that works with a broad range of models. Ask it to add features or fix bugs, and it will propose changes right in your git repository.
+### Daemonite is your agentic mode AI developer that works with a broad range of models. Ask it to add features or fix bugs, and it will propose changes right in your git repository. Daemonite can run arbitrary commands and your test suite.
 
 ![Video showing Daemonite being used to quickly change a website](/_doc/demo.gif)
 
@@ -78,3 +78,17 @@ daemonite chat --repo /path/to/repo
 To switch models just type "/model" in the chat and select your favorite from the dropdown.
 
 Now you are ready to go! Happy coding.
+
+## A Note On Test Running
+By default Daemonite will only make a few attempts to set up and run your project and tests. To ensure Daemonite makes all tests pass (or until the internal turn limit is reached) please include a toml file with a configured test command. You can even supply a custom image with installed dependencies and Daemonite will use that to run your tests.
+
+```toml
+# In a daemonite.toml file at the root of your repo:
+
+[[test]]
+image = "docker.io/image/to/use:latest"
+mount_dir = "/path/to/where/src/is/expected"
+command = "test command -to -run"
+
+# image and mount_dir are optional, by default an ubuntu-like image is used
+```
