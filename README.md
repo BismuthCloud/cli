@@ -1,6 +1,6 @@
-# Daemonite
+# Daemonite by Bismuth
 
-### Daemonite is your AI developer assistant. Ask it to add features or fix bugs, and it will propose changes right in your git repository.
+### Daemonite is your agentic mode AI developer that works with a broad range of models. Ask it to add features or fix bugs, and it will propose changes right in your git repository.
 
 ![Video showing Daemonite being used to quickly change a website](/_doc/demo.gif)
 
@@ -33,12 +33,12 @@ Then when you give a task to Daemonite, it searches through this index picking o
 
 With that context, Daemonite uses the LLM of your choice to create or edit files, and returns a single diff to you for review all right in the terminal. When you accept it, the changes are added as a descriptive git commit to your repo making it easy to keep your code base clean.
 
-![diff showing a change Daemonite is proposing](/_doc/diff.png)
+![diff showing a change Bismuth is proposing](/_doc/diff.png)
 
 ## Setup
 By default, Daemonite uses Anthropic's Sonnet 3.7 model and supports either Anthropic's API or OpenRouter.
 To configure this, first get either an [Anthropic API key](https://console.anthropic.com/settings/keys) or an [OpenRouter API key](https://openrouter.ai/settings/keys) and export it to your environment as `ANTHROPIC_KEY` or `OPENROUTER_KEY` respectively.
-Additionally, if you'd like to use vector search to improve Daemonite's internal code search: create a GCP project, enable the Vertex AI API, download a service account JSON, mount it into the `daneel` container in [`docker-compose.yaml`](./docker-compose.yaml), and set the `GOOGLE_APPLICATION_CREDENTIALS` variable as the path to the mounted JSON file.
+Additionally, if you'd like to use vector search to improve Bismuth's internal code search: create a GCP project, enable the Vertex AI API, download a service account JSON, mount it into the `daneel` container in [`docker-compose.yaml`](./docker-compose.yaml), and set the `GOOGLE_APPLICATION_CREDENTIALS` variable as the path to the mounted JSON file.
 
 Now you can `docker compose up`. This will bring up the main [API](/api) and [Daneel](/daneel), the main interactive chat server.
 
@@ -74,3 +74,7 @@ And begin using Daemonite:
 ```
 daemonite chat --repo /path/to/repo
 ```
+
+To switch models just type "/model" in the chat and select your favorite from the dropdown.
+
+Now you are ready to go! Happy coding.
